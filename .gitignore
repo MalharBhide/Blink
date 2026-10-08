@@ -1,0 +1,29 @@
+.env
+.env.*
+!.env.example
+.venv/
+.data/
+node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+test-results/
+playwright-report/
+*.sqlite*
+*.db*
+*.log
+.DS_Store
+# Applicant originals must never enter public source control.
+*.pdf
+*.docx
+*.doc
+*.xls
+*.xlsx
+frontend/*.tsbuildinfo
+.pnpm-store/
+frontend/.local_node_modules_backup/
+# Also ignore dependency directories represented as symlinks.
+node_modules
+.venv

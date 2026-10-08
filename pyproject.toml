@@ -1,0 +1,16 @@
+[project]
+name = "internship-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["fastapi==0.142.4", "uvicorn[standard]==0.54.0", "SQLAlchemy==2.1.4", "alembic==1.20.0", "pydantic-settings==2.15.0", "cryptography==50.0.2", "python-multipart==0.0.32", "playwright==1.63.0", "openai==3.26.0"]
+[project.optional-dependencies]
+test = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "httpx==0.28.1", "ruff==0.16.10"]
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+[tool.ruff]
+line-length = 110
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
