@@ -1,12 +1,17 @@
 export const BASE = "http://127.0.0.1:8000";
 export let token = "";
-export async function connect() {
+export async function connect(accessCode = "") {
   const res = await fetch(`${BASE}/api/session`, {
-    headers: { "X-Local-Client": "internship-ui" },
+    headers: {
+      "X-Local-Client": "internship-ui",
+      "X-Blink-Access": accessCode,
+    },
   });
   if (!res.ok)
     throw new Error(
-      "Cannot connect to the local backend. Start FastAPI on port 8000.",
+      res.status === 403
+        ? "Enter your private access code to unlock Blink."
+        : "Cannot connect to the local backend. Start FastAPI on port 8000.",
     );
   const data = await res.json();
   token = data.token;

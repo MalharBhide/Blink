@@ -7,6 +7,16 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     strictPort: true,
+    fs: {
+      deny: [
+        ".env",
+        ".env.*",
+        "*.{crt,pem}",
+        "**/.git/**",
+        "**/.data/**",
+        "**/.venv/**",
+      ],
+    },
     watch: {
       ignored: [
         "**/.local_node_modules_backup/**",

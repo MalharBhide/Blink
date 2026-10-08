@@ -25,7 +25,7 @@ python -m alembic upgrade head
 python scripts/dev.py
 ```
 
-Open **http://127.0.0.1:5173**. The supervisor starts the backend on port 8000, mock portal on 8001, and frontend on 5173. Ctrl+C stops the services. Migrations also run idempotently at API startup. The launcher creates `.env` from the example if missing.
+Open **http://127.0.0.1:5173** and unlock using the code in your local **`.data/access-code`** file. Open that file in a text editor (or run `cat .data/access-code`; PowerShell: `Get-Content .data/access-code`). It is created with owner-only permissions and never served over HTTP. Paste it into Blink; it is kept only in memory. The supervisor starts the backend on port 8000, mock portal on 8001, and frontend on 5173. Ctrl+C stops the services. Migrations also run idempotently at API startup. The launcher creates `.env` from the example if missing.
 
 Windows PowerShell uses `py -3.12 -m venv .venv`, `.venv\Scripts\Activate.ps1`, and `Copy-Item .env.example .env`. Use `python` instead of `python3` after activating. If necessary allow script activation for the current terminal, or call `.venv\Scripts\python.exe` directly. Install pnpm using the official package manager setup or `npm install -g pnpm@11`. On Linux, `python -m playwright install --with-deps chromium` can install required system dependencies.
 
@@ -77,7 +77,7 @@ AI calls send minimal question/chat context; draft generation sends only selecte
 
 ## Privacy and public source code
 
-**This repository contains no user applicant database or uploaded documents.** A user's profile and documents are created in their own local `.data/` directory when they run the application. They are encrypted at rest, Git-ignored, and excluded from publication. `.env` and the encryption key are also excluded. Frontend state and screenshots are not stored in browser localStorage. The local API uses origin/host/client checks and ephemeral bearer tokens; FastAPI telemetry is explicitly disabled.
+**This repository contains no user applicant database or uploaded documents.** A user's profile and documents are created in their own local `.data/` directory when they run the application. They are encrypted at rest, Git-ignored, and excluded from publication. `.env`, the private access code, and the encryption key are also excluded. Frontend state and screenshots are not stored in browser localStorage. The local API uses origin/host/client checks and private access-code pairing and ephemeral bearer tokens; FastAPI telemetry is explicitly disabled.
 
 This is a local trust boundary: someone with your OS account/admin privileges or your encryption key can access local data. Employer portals receive information entered into their forms and may save it before final submission; OpenAI receives selected context when enabled. There is no claim of certified legal compliance or protection against compromised devices. Read [docs/SECURITY.md](docs/SECURITY.md) before using real applicant data.
 

@@ -1,10 +1,24 @@
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Private access code").fill("incorrect");
+  await page.getByRole("button", { name: "Unlock Blink" }).click();
+  await expect(page.getByLabel("Private access code")).toBeVisible();
+  const code = readFileSync(
+    resolve(process.env.BLINK_TEST_DATA_DIR!, "access-code"),
+    "utf8",
+  );
+  await page.getByLabel("Private access code").fill(code);
+  await page.getByRole("button", { name: "Unlock Blink" }).click();
+  await expect(page.getByText("Local workspace connected")).toBeVisible();
+});
 
 test("onboarding, resume, chat memory, review, confirmed submission, and history", async ({
   page,
   request,
 }) => {
-  await page.goto("/");
   await expect(page.getByText("Local workspace connected")).toBeVisible();
   await expect(
     page.getByRole("heading", {
@@ -52,13 +66,11 @@ test("onboarding, resume, chat memory, review, confirmed submission, and history
     page.getByText("Profile saved securely on this device."),
   ).toBeVisible();
   await page.getByRole("button", { name: "Documents", exact: true }).click();
-  await page
-    .getByLabel("Upload document", { exact: true })
-    .setInputFiles({
-      name: "synthetic-resume.pdf",
-      mimeType: "application/pdf",
-      buffer: Buffer.from("%PDF-1.4\nSynthetic resume\n%%EOF"),
-    });
+  await page.getByLabel("Upload document", { exact: true }).setInputFiles({
+    name: "synthetic-resume.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\nSynthetic resume\n%%EOF"),
+  });
   await expect(page.getByText("Default resume", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Overview", exact: true }).click();
   await page
@@ -130,7 +142,6 @@ test("onboarding, resume, chat memory, review, confirmed submission, and history
 
 test("responsive dashboard and profile remain usable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
   await expect(
     page.getByRole("button", { name: "Start application", exact: true }),
   ).toBeVisible();

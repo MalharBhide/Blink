@@ -4,7 +4,7 @@ from browser_agent.validator import classify_title
 from browser_agent.parser import Field
 from browser_agent.resolver import AnswerResolver
 from backend.app.ai import AIService
-from backend.app.config import settings
+from backend.app.config import settings, access_code
 from backend.app.memory import fingerprint
 from database.models import Application
 from backend.app.documents import document_payload
@@ -80,7 +80,16 @@ def test_api_origin_auth_upload_encryption_and_memory(client, profile_data):
         ).status_code
         == 403
     )
-    token = client.get("/api/session", headers={"X-Local-Client": "internship-ui"}).json()["token"]
+    assert client.get("/api/session", headers={"X-Local-Client": "internship-ui"}).status_code == 403
+    assert (
+        client.get(
+            "/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Access": "wrong"}
+        ).status_code
+        == 403
+    )
+    token = client.get(
+        "/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Access": access_code()}
+    ).json()["token"]
     client.headers.update({"Authorization": "Bearer " + token})
     assert client.put("/api/profile", json=profile_data).status_code == 200
     assert client.get("/api/profile").json() == profile_data
@@ -149,3 +158,20 @@ def test_duplicate_keys_cover_equivalent_portal_host_aliases():
     assert job_key("https://boards.greenhouse.io/example/jobs/123") == job_key(
         "https://job-boards.greenhouse.io/example/jobs/123"
     )
+
+
+def test_local_pairing_secret_stays_private(client):
+    import os
+    import stat
+
+    code = access_code()
+    path = settings().data_dir / "access-code"
+    assert path.read_text() == code
+    assert len(code) >= 32
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    paired = client.get("/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Access": code})
+    assert paired.status_code == 200
+    assert code not in paired.text
+    assert client.get("/api/access-code").status_code == 404

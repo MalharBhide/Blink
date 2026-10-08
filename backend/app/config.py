@@ -3,6 +3,7 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from cryptography.fernet import Fernet
 import os
+import secrets
 
 
 class Settings(BaseSettings):
@@ -44,3 +45,23 @@ def cipher():
         with os.fdopen(fd, "wb") as stream:
             stream.write(Fernet.generate_key())
     return Fernet(path.read_bytes())
+
+
+@lru_cache
+def access_code():
+    """Private local pairing secret; never delivered by a public HTTP endpoint."""
+    folder = settings().data_dir
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    folder.chmod(0o700)
+    path = folder / "access-code"
+    if not path.exists():
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(secrets.token_urlsafe(32))
+    path.chmod(0o600)
+    value = path.read_text().strip()
+    if len(value) < 32:
+        raise RuntimeError(
+            "Local access code is invalid. Restore it or remove only the access-code file and restart."
+        )
+    return value

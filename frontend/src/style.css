@@ -1780,3 +1780,45 @@ h1 em:after {
 .launch-card .orbit-decoration svg {
   transform: rotate(9deg);
 }
+
+.unlock-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f5f5ec;
+}
+.unlock-card {
+  display: grid;
+  gap: 20px;
+  width: min(100%, 500px);
+  padding: 40px;
+  background: white;
+  border: 1px solid #dce3d9;
+  border-radius: 24px;
+  box-shadow: 0 20px 80px #243e2312;
+}
+.unlock-card h1 {
+  font-size: 32px;
+  line-height: 1.25;
+  letter-spacing: -1px;
+}
+.unlock-card h1 em {
+  color: #618344;
+}
+.unlock-card small {
+  line-height: 1.6;
+  color: #6b7868;
+}
+.unlock-card label {
+  display: grid;
+  gap: 8px;
+}
+@media (max-width: 500px) {
+  .unlock-card {
+    padding: 24px;
+  }
+  .unlock-card h1 {
+    font-size: 28px;
+  }
+}

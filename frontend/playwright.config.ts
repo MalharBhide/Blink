@@ -1,5 +1,10 @@
 import { defineConfig } from "@playwright/test";
-const runId = Date.now().toString();
+import { fileURLToPath } from "node:url";
+const runId = process.env.BLINK_E2E_RUN_ID || Date.now().toString();
+process.env.BLINK_E2E_RUN_ID = runId;
+process.env.BLINK_TEST_DATA_DIR = fileURLToPath(
+  new URL(`../.data/e2e/${runId}`, import.meta.url),
+);
 export default defineConfig({
   testDir: "e2e",
   timeout: 60000,

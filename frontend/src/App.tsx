@@ -207,6 +207,7 @@ export default function App() {
     [query, setQuery] = useState(""),
     [image, setImage] = useState<string | null>(null);
   const chatScroll = useRef<HTMLDivElement>(null);
+  const [accessCode, setAccessCode] = useState("");
   const [draftOrigin, setDraftOrigin] = useState(false);
   const [chat, setChat] = useState(""),
     [remember, setRemember] = useState(false),
@@ -485,6 +486,66 @@ export default function App() {
     ["workspace", "Agent workspace", Sparkles],
     ["history", "Application history", History],
   ] as const;
+  if (!connected)
+    return (
+      <main className="unlock-screen">
+        <form
+          className="unlock-card"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              const cfg = await connect(accessCode);
+              setConfig(cfg);
+              await refresh();
+              setConnected(true);
+              setAccessCode("");
+              setError("");
+            } catch (e) {
+              setError(
+                e instanceof Error ? e.message : "Could not unlock Blink.",
+              );
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="brand">
+            <Zap size={28} />
+            <strong>Blink</strong>
+          </div>
+          <h1>
+            Apply for internships in the <em>blink</em> of an eye.
+          </h1>
+          <p>Your applications. Your private workspace.</p>
+          <label>
+            Private access code
+            <input
+              type="password"
+              autoComplete="off"
+              value={accessCode}
+              onChange={(e) => setAccessCode(e.target.value)}
+              required
+            />
+          </label>
+          <small>
+            Find your code in <code>.data/access-code</code> in your local Blink
+            folder. The launcher creates it on first start.
+          </small>
+          {error && (
+            <p className="alert error" role="alert">
+              {error}
+            </p>
+          )}
+          <button className="primary" type="submit" disabled={busy}>
+            {busy ? "Unlocking…" : "Unlock Blink"}
+          </button>
+          <small>
+            Access codes stay on this device. Never share or commit yours.
+          </small>
+        </form>
+      </main>
+    );
   return (
     <div className="app-shell">
       <aside className="sidebar">

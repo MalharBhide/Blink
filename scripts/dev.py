@@ -34,6 +34,7 @@ try:
         )
     processes.append(subprocess.Popen([manager, "run", "dev"], cwd=ROOT / "frontend", shell=os.name == "nt"))
     print("Blink: http://127.0.0.1:5173 · Local API: 8000 · Mock portal: 8001", flush=True)
+    print("Unlock Blink using your private .data/access-code file. Do not share it.", flush=True)
     for process in processes:
         process.wait()
 except KeyboardInterrupt:

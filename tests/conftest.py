@@ -21,6 +21,7 @@ import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
 from backend.app.main import app, AGENTS
+from backend.app.config import access_code
 from database.models import Base, Profile
 from database.session import session
 
@@ -68,7 +69,9 @@ def client():
             db.add(Profile(id=1, data={}))
             db.commit()
         AGENTS.clear()
-        token = client.get("/api/session", headers={"X-Local-Client": "internship-ui"}).json()["token"]
+        token = client.get(
+            "/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Access": access_code()}
+        ).json()["token"]
         client.headers.update({"Authorization": "Bearer " + token})
         yield client
 

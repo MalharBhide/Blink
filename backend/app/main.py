@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from alembic.config import Config
 from alembic import command
-from backend.app.config import settings
+from backend.app.config import settings, access_code
 from backend.app.schemas import (
     ProfileInput,
     StartInput,
@@ -48,6 +48,7 @@ AGENTS: dict[str, AgentOrchestrator] = {}
 
 @asynccontextmanager
 async def lifespan(app):
+    access_code()
     command.upgrade(Config("alembic.ini"), "head")
     with session() as db:
         if not db.get(Profile, 1):
@@ -93,7 +94,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().origins,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Local-Client"],
+    allow_headers=["Authorization", "Content-Type", "X-Local-Client", "X-Blink-Access"],
 )
 
 
@@ -145,6 +146,8 @@ def bootstrap(request: Request):
     # Non-simple header triggers CORS preflight and prevents an arbitrary website reading a token.
     if request.headers.get("x-local-client") != "internship-ui":
         raise HTTPException(403, "Use the local application UI.")
+    if not secrets.compare_digest(request.headers.get("x-blink-access", ""), access_code()):
+        raise HTTPException(403, "Unlock Blink using your private local access code.")
     return {
         "token": TOKEN,
         "ai_enabled": bool(settings().openai_api_key),
