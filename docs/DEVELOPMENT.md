@@ -4,7 +4,7 @@
 
 Blink is a local, single-user MVP with a React/TypeScript/Tailwind frontend, FastAPI backend, encrypted SQLite persistence through SQLAlchemy/Alembic, a restricted Playwright browser agent, WebSocket updates, and optional OpenAI integration.
 
-**The complete onboarding → profile → document upload → automatic form filling → missing-answer chat → remembered answers → review → approved submission → confirmed history flow works against the included local multi-step mock portal.** Real Workday, Greenhouse, and Lever adapters are conservative and experimental. They parse known semantics and pause at unsupported employer-specific controls, redirects, authentication, or network endpoints. This is not a universal real-employer auto-apply service. No real employer submission is used in automated tests.
+**The complete onboarding → profile → document upload → automatic form filling → missing-answer chat → remembered answers → review → approved submission → confirmed history flow works against the included local multi-step mock portal.** Direct public HTTPS links use platform detection or the generic semantic form adapter. Synthetic unfamiliar-site HTML forms are also tested through approved submission. Real Workday, Greenhouse, Lever, Ashby, SmartRecruiters, iCIMS, and other employer workflows remain conservative and experimental. They parse known semantics and pause at unsupported employer-specific controls, redirects, authentication, or network endpoints. This is not a universal real-employer auto-apply service. No real employer submission is used in automated tests.
 
 ## Quick start
 
@@ -95,9 +95,9 @@ pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-Python tests launch the local mock portal on **8001** and use a fresh temporary encrypted database and synthetic applicant data. Stop your development mock server first. E2E tests start all three localhost services, use headless contexts, and store ignored synthetic test data in `.data/e2e`. Stop development services first for isolated E2E runs; E2E refuses to reuse existing servers and uses the built production frontend. CI runs in fresh environments. No employer forms are submitted.
+Python tests launch the local mock portal on **8001** and use a fresh temporary encrypted database and synthetic applicant data. Unfamiliar-portal tests fulfill synthetic HTTPS pages through the production request guard; they make no outbound employer requests. Separate DNS tests reject private and mixed public/private addresses. Stop your development mock server first. E2E tests start all three localhost services, use headless contexts, and store ignored synthetic test data in `.data/e2e`. Stop development services first for isolated E2E runs; E2E refuses to reuse existing servers and uses the built production frontend. CI runs in fresh environments. No employer forms are submitted.
 
-Test coverage includes onboarding persistence, profile-derived filling, missing answers, explicit memory approval/reuse, repeated records, selected resume upload, pause/resume, non-internship rejection, URL/file/API access restrictions, malicious page content, no premature submit, revision approval, confirmed submission, review edits, duplicates, optional EEO consent, and authorization/sponsorship jurisdiction/time distinctions. Frontend tests cover the complete UI flow and mobile overflow. CI runs backend tests, lint, source hygiene, frontend build, and E2E tests.
+Test coverage includes onboarding persistence, profile-derived filling, missing answers, explicit memory approval/reuse, repeated records, selected resume upload, pause/resume, non-internship rejection, URL/file/API access restrictions, malicious page content, no premature submit, revision approval, confirmed submission, review edits, duplicates, optional EEO consent, and authorization/sponsorship jurisdiction/time distinctions. Unfamiliar-site tests additionally cover HTML multipart submission, exact destination/redirect consent, one-shot POST permissions, receipt redirects without POST replay, changed form actions, misleading metadata, different-role destinations, URL-query job identity, cross-domain duplicate aliases, Apply buttons, multi-page navigation, and reconstruction with per-application consent. Frontend tests cover the complete UI flow and mobile overflow. CI runs backend tests, lint, source hygiene, frontend build, and E2E tests.
 
 ## Current capability boundary
 
@@ -110,9 +110,12 @@ Test coverage includes onboarding persistence, profile-derived filling, missing 
 | Missing-answer chat, explicit memory reuse, revision-bound review, mock submission | End-to-end tested |
 | Text, email, month/date, radios, native selects, file controls | Working |
 | Checkboxes, searchable comboboxes, conditional DOM reinspection | Implemented; adapter-specific verification required |
-| Workday/Greenhouse/Lever role selectors and scoped navigation | Experimental, conservative |
+| Public HTTPS links, functional query IDs, generic labeled HTML forms and POST submission | Working in synthetic unfamiliar-site tests; real employer compatibility varies |
+| Workday/Greenhouse/Lever/Ashby/SmartRecruiters/iCIMS platform detection/selectors | Experimental, conservative |
+| Exact user-confirmed Apply/next-step destinations and redirects | Implemented and tested; never grants whole domains |
 | Employer-specific Workday repeaters/custom dropdowns/draft APIs/login transitions | Partial; pauses instead of granting general access |
-| Real ATS final submission network endpoints | Strictly limited; unrecognized endpoints blocked |
+| HTML form final POST endpoints | Exact targets only; unfamiliar actions require destination confirmation and final revision approval |
+| Custom JavaScript upload/draft/submission APIs and embedded forms | Unsupported unless an explicitly scoped adapter handles them |
 | OpenAI structured responses, question comparison, user-requested drafts | Implemented; SDK contract tested; paid live calls not exercised |
 | CAPTCHA/authentication | Manual; unsupported redirects remain blocked |
 | Resume after restart | Reconstructs supported forms; no saved passwords or browser cookies |
@@ -141,7 +144,7 @@ The orchestrator chooses permitted steps. The controller performs fixed browser 
 
 - **Backend offline:** activate the environment, start the API on 8000, and check that `.env` frontend origins match `http://127.0.0.1:5173` or `http://localhost:5173`.
 - **Browser missing:** `python -m playwright install chromium`; Linux may also need `--with-deps`.
-- **Unknown/malformed control:** choose an available option; resolve validation manually in the dedicated browser. Account/CAPTCHA challenges are never bypassed. Unsupported portal URLs/endpoints need an adapter change rather than an allow-all switch.
+- **Unknown/malformed control:** choose an available option; resolve validation manually in the dedicated browser. Account/CAPTCHA challenges are never bypassed. New application pages can receive exact user approval. Custom APIs and authentication still require scoped adapter support rather than an allow-all switch.
 - **Paused after restart:** open the application in History and Continue. It replays recorded values and asks for missing ones.
 - **Submission unknown:** check the employer portal manually. Do not force another automated submission. Blink retains its duplicate lock.
 - **Slow macOS Documents dependency reads:** some synced Documents directories make large `node_modules`/virtual environments slow. Use an ordinary local clone outside a synced folder, or install the Python environment outside the source tree. User data still remains local and ignored.

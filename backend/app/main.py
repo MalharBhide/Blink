@@ -308,6 +308,20 @@ async def start_application(body: StartInput):
     validate_doc(resume_id)
     with session() as db:
         existing = db.scalar(select(Application).where(Application.job_key == key))
+        if not existing:
+            # Employer links and their user-confirmed ATS destinations represent
+            # one tracked application, even when their domains are different.
+            existing = next(
+                (
+                    row
+                    for row in db.scalars(select(Application))
+                    if any(
+                        not dest["submission"] and job_key(dest["url"], settings().enable_mock_portal) == key
+                        for dest in row.data.get("workflow_destinations", [])
+                    )
+                ),
+                None,
+            )
         if existing:
             raise HTTPException(
                 409,
@@ -488,7 +502,7 @@ async def chat(app_id: str, body: ChatInput):
         action_name, value = "resume", resume_command.group(1)
     if action_name:
         reply = "Done."
-    elif get_application(app_id).status in ("waiting_answer", "waiting_verification"):
+    elif get_application(app_id).status in ("waiting_answer", "waiting_verification", "waiting_workflow"):
         await agent.answer(text)
         return {
             "reply": "I’ve entered your answer for this application. Use Saved answers to explicitly approve reuse."

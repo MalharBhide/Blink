@@ -2,10 +2,10 @@ import asyncio
 from dataclasses import asdict
 from urllib.parse import urljoin
 from datetime import datetime, timezone
-from browser_agent.policy import WorkflowPolicy, PolicyError
+from browser_agent.policy import WorkflowPolicy, PolicyError, canonical, platform_for
 from browser_agent.controller import BrowserController
 from browser_agent.adapters import ADAPTERS
-from browser_agent.validator import inspect_job
+from browser_agent.validator import inspect_job, application_matches_job
 from browser_agent.resolver import AnswerResolver, Resolution
 from backend.app.config import settings
 from backend.app.ai import AIService
@@ -17,14 +17,15 @@ from database.models import Application
 TERMINAL = {"submitted", "cancelled", "rejected"}
 TRANSITIONS = {
     "queued": {"verifying", "cancelled"},
-    "verifying": {"waiting_verification", "filling", "rejected", "paused", "cancelled"},
+    "verifying": {"waiting_verification", "waiting_workflow", "filling", "rejected", "paused", "cancelled"},
     "waiting_verification": {"filling", "cancelled", "rejected", "paused"},
-    "filling": {"waiting_answer", "manual", "review", "paused", "cancelled"},
+    "filling": {"waiting_answer", "waiting_workflow", "manual", "review", "paused", "cancelled", "rejected"},
+    "waiting_workflow": {"verifying", "filling", "submitting", "paused", "cancelled"},
     "waiting_answer": {"filling", "paused", "cancelled"},
     "manual": {"filling", "paused", "cancelled"},
     "review": {"submitting", "filling", "paused", "cancelled"},
-    "submitting": {"submitted", "submission_unknown", "cancelled"},
-    "paused": {"verifying", "filling", "waiting_answer", "review", "manual", "cancelled"},
+    "submitting": {"waiting_workflow", "submitted", "submission_unknown", "cancelled"},
+    "paused": {"verifying", "filling", "waiting_answer", "waiting_workflow", "review", "manual", "cancelled"},
     "submission_unknown": {"cancelled"},
 }
 
@@ -73,6 +74,52 @@ class AgentOrchestrator:
     async def start(self):
         self.task = asyncio.create_task(self.run())
 
+    async def confirm_destination(self, policy, url, reason, *, submission=False):
+        target = await asyncio.to_thread(policy.validate_destination, url)
+        prior = get_application(self.app_id).status
+        self.state(
+            "waiting_workflow",
+            pending={
+                "kind": "workflow",
+                "label": f"{reason}\n{target}\nIs this destination part of this internship application?",
+                "options": ["Yes", "No"],
+            },
+        )
+        log(
+            self.app_id,
+            "A new destination is blocked until you confirm its association with this internship. Only this exact URL can be approved; account and private-network destinations remain blocked.",
+        )
+        answer = await self.reply.get()
+        await self.checkpoint()
+        self.state(prior, pending=None)
+        if answer.answer.casefold() != "yes":
+            raise PolicyError("You declined this workflow destination.")
+        policy.approve_destination(target, user_confirmed=True, submission=submission)
+        # Stored only inside this encrypted application, never reusable across roles.
+        item = get_application(self.app_id)
+        approved = item.data.get("workflow_destinations", [])
+        if {"url": target, "submission": submission} not in approved:
+            update(self.app_id, workflow_destinations=[*approved, {"url": target, "submission": submission}])
+        return target
+
+    async def navigate_workflow(self, url):
+        """Follow confirmed redirects one exact URL at a time, never an entire domain."""
+        for _ in range(6):
+            try:
+                await self.controller.navigate(url)
+                return
+            except Exception:
+                target = self.controller.pending_navigation
+                if not target:
+                    raise
+                if canonical(target) in self.controller.policy.allowed_pages:
+                    url = canonical(target)
+                else:
+                    url = await self.confirm_destination(
+                        self.controller.policy, target, "The link redirects to a new page."
+                    )
+        raise PolicyError("Too many workflow redirects; review the link manually.")
+
     async def run(self):
         cfg = settings()
         app = get_application(self.app_id)
@@ -81,6 +128,15 @@ class AgentOrchestrator:
             policy = await asyncio.wait_for(
                 asyncio.to_thread(WorkflowPolicy, app.data["url"], cfg.enable_mock_portal), timeout=15
             )
+            # These permissions came from the authenticated user's confirmation,
+            # not from website content, and remain scoped to this application.
+            destinations = app.data.get("workflow_destinations", [])
+            for dest in destinations:
+                if not dest["submission"]:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(policy.approve_destination, dest["url"], user_confirmed=True),
+                        timeout=15,
+                    )
             self.controller = BrowserController(policy, cfg.browser_headless)
             adapter = ADAPTERS[policy.platform]()
             log(
@@ -88,11 +144,20 @@ class AgentOrchestrator:
                 "Opening an isolated browser to verify the role. Browser preview refreshes after each action.",
             )
             await self.controller.start()
-            await self.controller.navigate(policy.initial_url)
+            await self.navigate_workflow(policy.initial_url)
+            # Redirects may lead to a different ATS; its adapter changes, not permissions.
+            detected = "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
+            adapter = ADAPTERS[detected]()
             await self.controller.page.wait_for_timeout(500)
             verdict = await inspect_job(self.controller.page, adapter)
             await self.controller.snapshot()
-            self.state("verifying", job=asdict(verdict), platform=policy.platform)
+            self.state("verifying", job=asdict(verdict), platform=detected)
+            if not verdict.title:
+                self.state(
+                    "paused",
+                    error="This portal did not expose a readable job title. Paste the employer's direct internship listing; scripts or embedded forms may be unsupported.",
+                )
+                return
             if verdict.status == "rejected":
                 self.state(
                     "rejected",
@@ -119,6 +184,14 @@ class AgentOrchestrator:
                     self.state("rejected", pending=None)
                     return
             policy.verified = True
+            for dest in destinations:
+                if dest["submission"]:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            policy.approve_destination, dest["url"], user_confirmed=True, submission=True
+                        ),
+                        timeout=15,
+                    )
             self.state("filling", pending=None)
             log(
                 self.app_id,
@@ -126,8 +199,33 @@ class AgentOrchestrator:
             )
             link = await adapter.apply_link(self.controller.page)
             if link:
-                target = policy.permit_apply_link(urljoin(self.controller.page.url, link))
-                await self.controller.navigate(target)
+                target = canonical(urljoin(self.controller.page.url, link))
+                if target not in policy.allowed_pages:
+                    target = await self.confirm_destination(
+                        policy, target, "Apply opens a new application page."
+                    )
+                policy.permit_apply_link(target)
+                await self.navigate_workflow(target)
+                adapter = ADAPTERS[
+                    "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
+                ]()
+            else:
+                entry = await adapter.apply_button(self.controller.page)
+                if entry:
+                    try:
+                        await self.controller.click_apply(entry)
+                    except Exception:
+                        target = self.controller.pending_navigation
+                        if not target:
+                            raise
+                        if canonical(target) not in policy.allowed_pages:
+                            target = await self.confirm_destination(
+                                policy, target, "Apply opens a new application page."
+                            )
+                        await self.navigate_workflow(target)
+                    adapter = ADAPTERS[
+                        "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
+                    ]()
             for step in range(30):
                 await self.checkpoint()
                 update(self.app_id, step=step)
@@ -140,6 +238,14 @@ class AgentOrchestrator:
                     self.gate.clear()
                     await self.checkpoint()
                 policy.interaction(self.controller.page.url)
+                if policy.platform != "mock" and not await application_matches_job(
+                    self.controller.page, adapter, verdict
+                ):
+                    self.state(
+                        "rejected",
+                        error="This page identifies a different or non-internship role. No further fields were filled.",
+                    )
+                    return
                 await adapter.expand_records(self.controller.page, get_profile())
                 fields = await self.controller.inspect()
                 for field in fields:
@@ -171,7 +277,21 @@ class AgentOrchestrator:
                 next_button = await adapter.next_button(self.controller.page)
                 if next_button:
                     before = await self.controller.page.locator("body").inner_text()
-                    await self.controller.click_next(next_button)
+                    self.controller.pending_navigation = None
+                    try:
+                        await self.controller.click_next(next_button)
+                    except Exception:
+                        target = self.controller.pending_navigation
+                        if not target:
+                            raise
+                        if canonical(target) not in policy.allowed_pages:
+                            target = await self.confirm_destination(
+                                policy, target, "The next application step opens a new page."
+                            )
+                        await self.navigate_workflow(target)
+                        adapter = ADAPTERS[
+                            "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
+                        ]()
                     await self.controller.page.wait_for_timeout(350)
                     after = await self.controller.page.locator("body").inner_text()
                     if after == before:
@@ -186,6 +306,31 @@ class AgentOrchestrator:
                     continue
                 submit = await adapter.submit_button(self.controller.page)
                 if submit:
+                    form_target = await self.controller.submission_form(submit)
+                    if policy.platform != "mock" and form_target:
+                        action = canonical(form_target["url"])
+                        if form_target["method"] != "POST":
+                            raise PolicyError("This form does not use a supported POST submission.")
+                        if (
+                            action not in policy.allowed_pages
+                            and (action, "POST") not in policy.submission_targets
+                        ):
+                            await self.confirm_destination(
+                                policy,
+                                action,
+                                "This form sends your application to the following endpoint.",
+                                submission=True,
+                            )
+                        policy.prepare_submission(self.controller.page.url, action, "POST")
+                    # Do not accept a success message present before the approved attempt.
+                    if await adapter.confirmation(self.controller.page):
+                        raise PolicyError(
+                            "A confirmation was already present before submission; verify this application manually."
+                        )
+                    update(
+                        self.app_id,
+                        submission_destination=canonical(form_target["url"]) if form_target else None,
+                    )
                     self.state("review", pending=None, warnings=[x["reason"] for x in policy.blocked[-5:]])
                     log(
                         self.app_id,
@@ -195,11 +340,26 @@ class AgentOrchestrator:
                     await self.approval.wait()
                     await self.checkpoint()
                     # Approval endpoint transitions under lock; network permit expires after the attempt.
+                    await self.controller.validate_submission_form(submit, form_target)
+                    policy.submission_permit = True
                     await self.controller.submit(submit)
                     confirmation = None
                     for _ in range(20):
                         await asyncio.sleep(0.25)
-                        confirmation = await adapter.confirmation(self.controller.page)
+                        receipt = self.controller.pending_confirmation
+                        if receipt:
+                            self.controller.pending_confirmation = None
+                            if canonical(receipt) not in policy.allowed_pages:
+                                receipt = await self.confirm_destination(
+                                    policy,
+                                    receipt,
+                                    "The portal returned a confirmation-page redirect after your approved submission.",
+                                )
+                            # Receipt redirects are read-only GET; never replay a POST.
+                            await self.navigate_workflow(receipt)
+                        status = self.controller.submission_response_status
+                        if status and 200 <= status < 304:
+                            confirmation = await adapter.confirmation(self.controller.page)
                         if confirmation:
                             break
                     policy.submission_permit = False
@@ -243,13 +403,17 @@ class AgentOrchestrator:
                 elif "paused" in TRANSITIONS.get(status, set()):
                     self.state(
                         "paused",
-                        error=f"Agent paused ({type(exc).__name__}). Browser or portal operation could not safely continue.",
+                        error=f"Agent paused: {exc}"
+                        if isinstance(exc, PolicyError)
+                        else f"Agent paused ({type(exc).__name__}). Browser or portal operation could not safely continue.",
                     )
                 log(
                     self.app_id,
                     "The browser operation could not safely continue. Your recorded answers are saved. Resume will reconstruct the form when supported.",
                 )
         finally:
+            if self.controller:
+                self.controller.policy.submission_permit = False
             if self.controller and get_application(self.app_id).status in ("cancelled", "rejected"):
                 await self.controller.close()
 
@@ -257,13 +421,18 @@ class AgentOrchestrator:
         async with self.lock:
             app = get_application(self.app_id)
             state = self.prior_state if app.status == "paused" else app.status
-            if state not in ("waiting_answer", "waiting_verification") or self.reply.full():
+            if (
+                state not in ("waiting_answer", "waiting_verification", "waiting_workflow")
+                or self.reply.full()
+            ):
                 raise ValueError("There is no active question awaiting an answer.")
             if not text.strip() and not document_id:
                 raise ValueError("Enter an answer or select a document.")
-            if state == "waiting_verification":
+            if state in ("waiting_verification", "waiting_workflow"):
+                if origin != "user":
+                    raise ValueError("Workflow and role confirmation must come explicitly from you.")
                 if text.casefold() not in ("yes", "no"):
-                    raise ValueError("Choose Yes or No to verify this role.")
+                    raise ValueError("Choose Yes or No to confirm this role or destination.")
             elif self.pending:
                 if self.pending.options and text not in self.pending.options:
                     raise ValueError("Choose one of the available options.")
@@ -337,7 +506,6 @@ class AgentOrchestrator:
             if not self.controller or not self.task or self.task.done():
                 raise ValueError("Browser disconnected. Resume and review again.")
             self.state("submitting", approved_revision=revision)
-            self.controller.policy.submission_permit = True
             self.approval.set()
 
     async def stop(self):

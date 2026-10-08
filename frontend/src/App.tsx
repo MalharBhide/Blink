@@ -82,6 +82,7 @@ type Application = {
   warnings?: string[];
   step?: number;
   confirmation?: string;
+  submission_destination?: string;
   messages?: { id: number; role: string; message: string }[];
 };
 type Memory = {
@@ -191,6 +192,7 @@ const statusLabel = (s: string) =>
       filling: "Filling your application",
       waiting_answer: "Needs your answer",
       waiting_verification: "Needs your confirmation",
+      waiting_workflow: "Confirm application destination",
       manual: "Needs your help",
       review: "Ready to review",
       submitting: "Submitting",
@@ -428,7 +430,9 @@ export default function App() {
     await run(async () => {
       if (
         active.pending &&
-        ["waiting_answer", "waiting_verification"].includes(active.status) &&
+        ["waiting_answer", "waiting_verification", "waiting_workflow"].includes(
+          active.status,
+        ) &&
         !/^(pause(?: the application)?|continue|resume|cancel(?: this application)?|stop|show me what you filled out|why did you choose that answer|don.t remember that answer|(?:change|update|set) .*graduation.*|use .*\.(?:pdf|docx))[.! ]*$/i.test(
           chat,
         )
@@ -536,6 +540,7 @@ export default function App() {
     [
       "waiting_answer",
       "waiting_verification",
+      "waiting_workflow",
       "review",
       "manual",
       "paused",
@@ -805,9 +810,10 @@ export default function App() {
                 </li>
               </ol>
               <p>
-                The practice portal is fully tested. Employer websites are
-                experimental and may need your help. Blink never bypasses logins
-                or CAPTCHA.
+                Paste a direct public HTTPS internship link from any employer or
+                portal. New destinations need your confirmation. Custom employer
+                forms are experimental and may need your help. Blink never
+                bypasses logins or CAPTCHA.
               </p>
               <p>
                 <strong>Opening Blink next time:</strong> double-click{" "}
@@ -941,11 +947,11 @@ export default function App() {
                     it needs you, and waits for your final approval.
                   </p>
                   <div className="supported">
-                    <span>Experimental support · WORKDAY</span>
+                    <span>Direct internship links</span>
                     <i />
-                    <span>Greenhouse</span>
+                    <span>Any public HTTPS site</span>
                     <i />
-                    <span>lever</span>
+                    <span>Verified before filling</span>
                   </div>
                 </div>
                 <div className="launch-action">
@@ -1746,7 +1752,9 @@ export default function App() {
                               ))}
                             </select>
                           ) : null}
-                          {active.pending.kind !== "verification" &&
+                          {!["verification", "workflow"].includes(
+                            active.pending.kind,
+                          ) &&
                             active.pending.kind !== "file" && (
                               <>
                                 <label className="check-label">
@@ -1879,6 +1887,15 @@ export default function App() {
                       <div className="inline-note">
                         <Check size={17} />
                         {active.confirmation}
+                      </div>
+                    )}
+                    {active.submission_destination && (
+                      <div className="inline-note">
+                        <ShieldCheck size={17} />
+                        <span style={{ overflowWrap: "anywhere" }}>
+                          Application destination:{" "}
+                          {active.submission_destination}
+                        </span>
                       </div>
                     )}
                     {active.warnings?.length ? (

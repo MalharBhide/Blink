@@ -1,7 +1,10 @@
 from playwright.async_api import async_playwright
 from browser_agent.policy import PolicyError
+from browser_agent.policy import canonical, public_host
 from browser_agent.parser import parse_form
 import json
+import asyncio
+from urllib.parse import urlsplit, urljoin
 
 
 class BrowserController:
@@ -12,6 +15,9 @@ class BrowserController:
         self.headless = headless
         self.browser = self.context = self.page = self.pw = None
         self.screenshot = None
+        self.pending_navigation = None
+        self.pending_confirmation = None
+        self.submission_response_status = None
 
     async def start(self):
         self.pw = await async_playwright().start()
@@ -36,19 +42,74 @@ class BrowserController:
             await page.close()
 
     async def _route(self, route):
+        try:
+            await self._guard_request(route)
+        except Exception:
+            # Playwright fetch diagnostics may contain cookies or headers.
+            # Never let those escape into application/server logs.
+            self.policy.blocked.append({"kind": "request", "reason": "Portal request failed or timed out"})
+            try:
+                await route.abort("failed")
+            except Exception:
+                pass
+
+    async def _guard_request(self, route):
         req = route.request
-        if not self.policy.request_allowed(req.url, req.resource_type, req.method):
+        permitted = self.policy.request_allowed(req.url, req.resource_type, req.method)
+        if permitted and req.method not in ("GET", "HEAD"):
+            # Consume the single approved submission attempt before any await.
+            # Concurrent website requests cannot reuse the permission.
+            self.policy.submission_permit = False
+        if req.resource_type == "document":
+            # Embedded documents cannot borrow main-page permissions.
+            if req.frame != self.page.main_frame:
+                permitted = False
+            elif not permitted and req.method == "GET":
+                # Candidate only; the route is aborted until a human confirms it.
+                self.pending_navigation = req.url
+        if permitted and urlsplit(req.url).scheme == "https":
+            try:
+                await asyncio.wait_for(asyncio.to_thread(public_host, urlsplit(req.url).hostname), 8)
+            except (PolicyError, TimeoutError):
+                permitted = False
+        permitted = permitted and not self.policy.stopped
+        if not permitted:
             self.policy.blocked.append(
                 {"kind": req.resource_type, "reason": "Blocked out-of-workflow request"}
             )
             await route.abort("blockedbyclient")
             return
-        await route.continue_()
+        # Chromium can follow a redirect without invoking the same route handler
+        # again. Fetch one hop, then fulfill; never forward an unchecked Location.
+        response = await route.fetch(max_redirects=0, timeout=20000)
+        if req.method == "POST":
+            self.submission_response_status = response.status
+        if 300 <= response.status < 400 and response.headers.get("location"):
+            if req.resource_type == "document" and req.method == "GET":
+                self.pending_navigation = urljoin(req.url, response.headers["location"])
+            elif req.method == "POST" and response.status in (301, 302, 303):
+                self.pending_confirmation = urljoin(req.url, response.headers["location"])
+            self.policy.blocked.append(
+                {"kind": req.resource_type, "reason": "Redirect awaits exact workflow approval"}
+            )
+            await route.abort("blockedbyclient")
+            return
+        await route.fulfill(response=response)
 
     async def navigate(self, url):
         self.policy.navigation(url)
+        self.pending_navigation = None
         await self.page.goto(url, wait_until="domcontentloaded")
-        self.policy.navigation(self.page.url)
+        self.check_current_navigation()
+
+    def check_current_navigation(self):
+        try:
+            self.policy.navigation(self.page.url)
+        except PolicyError:
+            # SPA history transitions can change the URL without a request.
+            if not self.pending_navigation:
+                self.pending_navigation = self.page.url
+            raise
 
     async def inspect(self):
         self.policy.interaction(self.page.url)
@@ -108,12 +169,45 @@ class BrowserController:
         if text not in ("next", "continue", "save and continue", "review", "review application"):
             raise PolicyError("Only navigation controls are allowed before review.")
         await button.click()
-        self.policy.navigation(self.page.url)
+        self.check_current_navigation()
+
+    async def click_apply(self, button):
+        self.policy.interaction(self.page.url)
+        controls = self.page.locator(
+            'input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select, [role="combobox"]'
+        )
+        if await controls.filter(visible=True).count():
+            raise PolicyError("An Apply control beside applicant fields requires final review.")
+        self.pending_navigation = None
+        await button.click()
+        self.check_current_navigation()
+
+    async def submission_form(self, button):
+        self.policy.interaction(self.page.url)
+        return await button.evaluate("""el => {
+            const form = el.form || el.closest('form');
+            if (!form || (el.type === 'button' && !form.hasAttribute('action'))) return null;
+            return {url: el.hasAttribute('formaction') ? el.formAction : form.action,
+                    method: (el.getAttribute('formmethod') || form.method || 'get').toUpperCase()};
+        }""")
+
+    async def validate_submission_form(self, button, expected):
+        actual = await self.submission_form(button)
+        if actual != expected:
+            raise PolicyError("The submission destination changed. Review it again before submitting.")
+        if actual:
+            self.policy.prepare_submission(self.page.url, canonical(actual["url"]), actual["method"])
 
     async def submit(self, button):
         self.policy.interaction(self.page.url)
         self.policy.require_submit()
-        await button.click(no_wait_after=True)
+        try:
+            await button.click(no_wait_after=True)
+        except Exception:
+            # A blocked receipt redirect can abort click's navigation wait.
+            # Its destination still requires separate read-only approval.
+            if not self.pending_confirmation:
+                raise
 
     async def stop(self):
         self.policy.stopped = True

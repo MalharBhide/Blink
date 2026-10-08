@@ -148,7 +148,8 @@ def test_job_identity_ignores_tracking_and_workday_title_changes(monkeypatch):
         "https://workday.wd5.myworkdayjobs.com/en-US/Workday/job/Other/Software-Intern_R-12?source=linkedin"
     )
     assert (
-        canonical("http://127.0.0.1:8001/mock/jobs/test/?utm=test") == "http://127.0.0.1:8001/mock/jobs/test"
+        canonical("http://127.0.0.1:8001/mock/jobs/test/?utm=test")
+        == "http://127.0.0.1:8001/mock/jobs/test?utm=test"
     )
 
 

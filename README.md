@@ -6,7 +6,7 @@ Fill out your profile once, upload your resume, and let Blink help with repetiti
 
 Blink runs **on your own computer**. There is no account to create and no shared applicant database. GitHub hosts the source code, not the running website or your information.
 
-> **What works today:** the complete application process is tested with the included practice portal. Workday, Greenhouse, and Lever support is experimental: some employer forms will pause and need your help. Blink cannot complete every employer's application yet.
+> **Link support:** paste a direct public HTTPS internship link from an employer or application portal. Blink uses a general form reader, plus platform adapters for Workday, Greenhouse, Lever, Ashby, SmartRecruiters, and iCIMS. The practice portal and unfamiliar-site HTML forms are tested end to end. Employer-specific forms remain experimental: accepting a link does not guarantee Blink can finish every application.
 
 ## Open Blink
 
@@ -51,10 +51,19 @@ On Windows, use `py -3 scripts\launch.py` instead. The launcher explains missing
 2. Choose **Upload your resume** and select a PDF or Word (`.docx`) file. You can keep several resumes and choose one for each application.
 3. On **Overview**, paste a direct internship job link. To learn how Blink works first, choose **Try the local test portal**. Use synthetic information for practice; do not submit real employer forms just to test the app.
 4. Watch **Agent workspace**. Blink fills information it knows and asks you for unfamiliar answers in chat. Only choose **Remember this answer** when you want it reused.
-5. **Review everything**, edit any answers you want to change, then choose **Approve & submit**. Blink records a successful application only after it finds confirmation.
-6. Check **Application history** to see progress or resume an interrupted application.
+5. If the employer opens a different application page, Blink asks you to **confirm that exact destination** before continuing. Confirm only links belonging to this internship. This permission stays with that application.
+6. **Review everything**, including where the form will send your information, edit any answers you want to change, then choose **Approve & submit**. Blink records a successful application only after it finds confirmation.
+7. Check **Application history** to see progress or resume an interrupted application.
 
 **Pause** puts an application on hold. **Stop** halts the agent and closes its application browser. **Lock workspace** hides your profile and locks this browser; it does not cancel an application already running.
+
+## Which internship links can I use?
+
+Use the direct posting or application link, rather than a company's homepage, a search results page, or your account dashboard. Job IDs in links such as `...?jobId=123` are preserved. The agent verifies an internship title before filling anything; ambiguous roles such as Summer Analyst need your confirmation.
+
+On unfamiliar sites, Blink can read labeled text fields, dropdowns, radio buttons, checkboxes, and upload controls. It supports ordinary HTML forms that submit to an explicitly approved endpoint, as well as the tested practice workflow. Apply buttons and new application steps can lead to another exact page after your confirmation.
+
+Some portals require custom APIs, third-party scripts, embedded forms, accounts, or CAPTCHA. Those can still pause. Blink keeps its browser restrictions active and tells you when it cannot continue safely. It cannot guarantee automatic completion on every employer's website.
 
 ## AI help is optional
 
