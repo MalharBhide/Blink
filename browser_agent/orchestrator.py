@@ -257,6 +257,7 @@ class AgentOrchestrator:
                     )
                     self.gate.clear()
                     await self.checkpoint()
+                    continue  # Recheck the challenge before parsing or filling login fields.
                 policy.interaction(self.controller.page.url)
                 if policy.platform != "mock" and not await application_matches_job(
                     self.controller.page, adapter, verdict

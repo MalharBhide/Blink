@@ -250,6 +250,11 @@ def test_real_orchestrator_workday_entry_and_manual_gate(client, profile_data, d
     assert state["platform"] == "workday"
     assert not state["answers"]
     assert AGENTS[app_id].controller.screenshot
+    previous_step = state["step"]
+    assert client.post(f"/api/applications/{app_id}/action", json={"action": "continue"}).status_code == 200
+    state = await_status(client, app_id, "manual")
+    assert state["step"] > previous_step
+    assert not state["answers"]  # Continue cannot turn an unfinished login into profile filling.
     assert all(method == "GET" for _, method, _ in dynamic_workday)
     assert (
         client.post(
