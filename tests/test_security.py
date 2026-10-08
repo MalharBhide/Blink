@@ -72,6 +72,7 @@ def test_title_validation_not_body_instructions():
 
 def test_api_origin_auth_upload_encryption_and_memory(client, profile_data):
     client.headers.pop("Authorization")
+    client.cookies.clear()
     assert client.get("/api/profile").status_code == 401
     assert client.get("/api/session").status_code == 403
     assert (

@@ -15,11 +15,17 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///.data/app.sqlite3"
     browser_headless: bool = False
     enable_mock_portal: bool = False
-    frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    frontend_origins: str = (
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000"
+    )
 
     @property
     def origins(self):
-        return self.frontend_origins.split(",")
+        return list(
+            dict.fromkeys(
+                [*self.frontend_origins.split(","), "http://127.0.0.1:8000", "http://localhost:8000"]
+            )
+        )
 
 
 @lru_cache

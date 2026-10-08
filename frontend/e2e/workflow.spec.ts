@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
+  await page.getByText("Use an access code instead", { exact: true }).click();
   await page.getByLabel("Private access code").fill("incorrect");
   await page.getByRole("button", { name: "Unlock Blink" }).click();
   await expect(page.getByLabel("Private access code")).toBeVisible();
@@ -153,4 +155,67 @@ test("responsive dashboard and profile remain usable", async ({ page }) => {
     path: "test-results/blink-mobile.png",
     fullPage: true,
   });
+});
+
+test("one-use launch link opens and refreshes a private workspace, then locks", async ({
+  page,
+  context,
+  request,
+}) => {
+  await context.clearCookies();
+  const candidate = randomBytes(32).toString("base64url");
+  writeFileSync(
+    resolve(process.env.BLINK_TEST_DATA_DIR!, "launch-ticket"),
+    JSON.stringify({ ticket: candidate, expires_at: Date.now() / 1000 + 120 }),
+    { mode: 0o600 },
+  );
+  await page.goto(`http://127.0.0.1:8000/#launch=${candidate}`);
+  await expect(page.getByText("Local workspace connected")).toBeVisible();
+  await expect(page).toHaveURL("http://127.0.0.1:8000/");
+  expect(page.url()).not.toContain(candidate);
+  await page.screenshot({
+    path: "test-results/blink-desktop.png",
+    fullPage: true,
+  });
+  await page.reload();
+  await expect(page.getByText("Local workspace connected")).toBeVisible();
+  await page.getByRole("button", { name: "Show help" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Got it" }).click();
+  const replay = await request.post(
+    "http://127.0.0.1:8000/api/session/launch",
+    {
+      headers: {
+        "X-Local-Client": "internship-ui",
+        "X-Blink-Launch": candidate,
+      },
+    },
+  );
+  expect(replay.status()).toBe(403);
+  await page.getByRole("button", { name: "Lock workspace" }).click();
+  await expect(
+    page.getByText("Your workspace is locked", { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText("Your workspace is locked", { exact: true }),
+  ).toBeVisible();
+});
+
+test("offline screen gives a useful launch instruction and retry", async ({
+  page,
+}) => {
+  await page.route("http://127.0.0.1:8000/api/session", (route) =>
+    route.abort(),
+  );
+  await page.reload();
+  await expect(
+    page.getByText("Blink isn't running yet", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Check connection again" }),
+  ).toBeVisible();
+  await page.unroute("http://127.0.0.1:8000/api/session");
+  await page.getByRole("button", { name: "Check connection again" }).click();
+  await expect(page.getByText("Local workspace connected")).toBeVisible();
 });

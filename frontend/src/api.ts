@@ -1,21 +1,100 @@
 export const BASE = "http://127.0.0.1:8000";
 export let token = "";
-export async function connect(accessCode = "") {
-  const res = await fetch(`${BASE}/api/session`, {
-    headers: {
-      "X-Local-Client": "internship-ui",
-      "X-Blink-Access": accessCode,
-    },
-  });
-  if (!res.ok)
-    throw new Error(
-      res.status === 403
-        ? "Enter your private access code to unlock Blink."
-        : "Cannot connect to the local backend. Start FastAPI on port 8000.",
+export class ConnectionError extends Error {
+  constructor(
+    message: string,
+    public kind: "locked" | "offline",
+  ) {
+    super(message);
+  }
+}
+// A launch ticket is one-use and expires in two minutes. Clear it before making requests.
+function takeLaunchTicket() {
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const ticket = fragment.get("launch") || "";
+  if (ticket)
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
     );
-  const data = await res.json();
+  return ticket;
+}
+const openingTicket = takeLaunchTicket();
+type SessionConfig = {
+  token: string;
+  session: string;
+  ai_enabled: boolean;
+  mock_enabled: boolean;
+  model: string;
+};
+let initial: Promise<SessionConfig> | undefined;
+export function connectNewLaunch() {
+  const ticket = takeLaunchTicket();
+  return ticket ? sessionRequest("", ticket) : null;
+}
+async function sessionRequest(accessCode = "", ticket = "") {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/api/session${ticket ? "/launch" : ""}`, {
+      method: ticket ? "POST" : "GET",
+      headers: {
+        "X-Local-Client": "internship-ui",
+        "X-Blink-Session": readTabSession(),
+        ...(ticket
+          ? { "X-Blink-Launch": ticket }
+          : { "X-Blink-Access": accessCode }),
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    throw new ConnectionError(
+      "Blink isn't running yet. Open Launch Blink, then try again.",
+      "offline",
+    );
+  }
+  if (!res.ok)
+    throw new ConnectionError(
+      res.status === 403
+        ? ticket
+          ? "This opening link has expired. Open Launch Blink again for a fresh, private link."
+          : accessCode
+            ? "That code doesn't match. Try again, or open Launch Blink."
+            : "Open Launch Blink to securely unlock your workspace."
+        : "Blink is still starting. Wait a moment and check again.",
+      res.status === 403 ? "locked" : "offline",
+    );
+  const data: SessionConfig = await res.json();
   token = data.token;
+  try {
+    sessionStorage.setItem("blink_session", data.session);
+  } catch {
+    /* Browsers may disable tab storage; pairing still works. */
+  }
   return data;
+}
+export function initialConnect() {
+  // React StrictMode must not consume a one-use ticket twice.
+  return (initial ||= sessionRequest("", openingTicket));
+}
+export function connect(accessCode = "") {
+  return sessionRequest(accessCode);
+}
+function readTabSession() {
+  try {
+    return sessionStorage.getItem("blink_session") || "";
+  } catch {
+    return "";
+  }
+}
+export function clearSession() {
+  try {
+    sessionStorage.removeItem("blink_session");
+  } catch {
+    /* No persistent login. */
+  }
+  token = "";
+  initial = undefined;
 }
 export async function api(path: string, method = "GET", body?: unknown) {
   const isForm = body instanceof FormData;
@@ -23,6 +102,7 @@ export async function api(path: string, method = "GET", body?: unknown) {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(path === "/session" ? { "X-Blink-Session": readTabSession() } : {}),
       ...(body && !isForm ? { "Content-Type": "application/json" } : {}),
     },
     body: body

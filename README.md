@@ -1,147 +1,95 @@
 # ⚡ Blink
 
-**Apply for internships in the _blink_ of an eye.** Answer once, apply repeatedly.
+**Apply for internships in the _blink_ of an eye.**
 
-Blink is a local, single-user MVP with a React/TypeScript/Tailwind frontend, FastAPI backend, encrypted SQLite persistence through SQLAlchemy/Alembic, a restricted Playwright browser agent, WebSocket updates, and optional OpenAI integration.
+Fill out your profile once, upload your resume, and let Blink help with repetitive internship application forms. It asks you about missing answers and **waits for your approval before submitting**.
 
-**The complete onboarding → profile → document upload → automatic form filling → missing-answer chat → remembered answers → review → approved submission → confirmed history flow works against the included local multi-step mock portal.** Real Workday, Greenhouse, and Lever adapters are conservative and experimental. They parse known semantics and pause at unsupported employer-specific controls, redirects, authentication, or network endpoints. This is not a universal real-employer auto-apply service. No real employer submission is used in automated tests.
+Blink runs **on your own computer**. There is no account to create and no shared applicant database. GitHub hosts the source code, not the running website or your information.
 
-## Quick start
+> **What works today:** the complete application process is tested with the included practice portal. Workday, Greenhouse, and Lever support is experimental: some employer forms will pause and need your help. Blink cannot complete every employer's application yet.
 
-Requirements: Python **3.12+**, Node.js **22.12+** (24 LTS recommended), and **pnpm 11**. Chromium installation may need additional system packages on Linux. macOS, Windows, and Linux source paths/launchers are supported; development was verified on macOS. Use your own downloaded clone for your own data.
+## Open Blink
 
-```bash
-git clone https://github.com/MalharBhide/Blink.git
-cd Blink
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r backend/requirements.lock.txt
-python -m playwright install chromium
-cp .env.example .env
-cd frontend
-pnpm install --frozen-lockfile
-cd ..
-python -m alembic upgrade head
-python scripts/dev.py
-```
+### First time
 
-Open **http://127.0.0.1:5173** and unlock using the code in your local **`.data/access-code`** file. Open that file in a text editor (or run `cat .data/access-code`; PowerShell: `Get-Content .data/access-code`). It is created with owner-only permissions and never served over HTTP. Paste it into Blink; it is kept only in memory. The supervisor starts the backend on port 8000, mock portal on 8001, and frontend on 5173. Ctrl+C stops the services. Migrations also run idempotently at API startup. The launcher creates `.env` from the example if missing.
+1. **Download Blink.** On [the repository page](https://github.com/MalharBhide/Blink), click **Code → Download ZIP**, then unzip it. Keep the folder somewhere private on your computer. If you already have the project folder, use that.
+2. **Install its two prerequisites** if you don't already have them: [Python](https://www.python.org/downloads/) **3.12 or newer**, and [Node.js](https://nodejs.org/en/download) **22.12 or newer**. Choose the Node.js LTS installer. On Windows, check **Add Python to PATH** in the Python installer. Close and reopen any old terminal windows afterward.
+3. **Open the Blink folder** and start the launcher for your computer:
 
-Windows PowerShell uses `py -3.12 -m venv .venv`, `.venv\Scripts\Activate.ps1`, and `Copy-Item .env.example .env`. Use `python` instead of `python3` after activating. If necessary allow script activation for the current terminal, or call `.venv\Scripts\python.exe` directly. Install pnpm using the official package manager setup or `npm install -g pnpm@11`. On Linux, `python -m playwright install --with-deps chromium` can install required system dependencies.
+   | Computer | Open this file |
+   | --- | --- |
+   | macOS | Double-click **Launch Blink.command** |
+   | Windows | Double-click **Launch Blink.bat** |
+   | Linux | Run **Launch Blink.sh** from a terminal |
 
-### Start services separately
+4. **Wait for setup.** The first launch downloads the required components and application browser, then prepares the website. It needs an internet connection and may take a few minutes. Later launches reuse what's installed.
+5. **Your browser opens automatically**, with your private workspace unlocked. You do **not** need to find an access-code file or start several servers.
 
-Run these from the repository root with the Python environment activated:
+You can close the launcher window after the website opens. Blink keeps running in the background.
 
-```bash
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --no-access-log
-python -m uvicorn mock_portal.main:app --host 127.0.0.1 --port 8001 --no-access-log
-```
+### Every time after that
 
-In a third terminal:
+Open **Launch Blink** again. It reconnects to your running workspace, or starts it if needed. Your saved profile and documents are still there.
 
-```bash
-cd frontend
-pnpm dev
-```
+The website normally runs at **http://127.0.0.1:8000**. This address works only on the computer running Blink. If the page is locked, reopen the launcher. Refreshing a signed-in tab keeps your session; restarting Blink locks it again.
 
-Do not use `--host 0.0.0.0`, expose the ports on the network, or deploy this single-user MVP as a hosted service.
+To shut it down, open **Stop Blink.command** on macOS or **Stop Blink.bat** on Windows. On Linux, run `./Launch\ Blink.sh --stop`. Stopping Blink keeps your saved information.
 
-## Try the complete flow
+### If double-clicking doesn't work
 
-1. Open **Applicant profile**, enter whatever personal/education/experience/skill data you want, and **Save profile**. Onboarding is optional and editable; you can start before every field is answered. Multiple education, employment, project, and skill records are supported.
-2. Upload a PDF/DOCX under **Documents**. The first resume becomes the default. Choose another document per application or switch the selected resume while paused/reviewing.
-3. Start with a fresh local URL such as `http://127.0.0.1:8001/mock/jobs/demo-1`. **Try the local test portal** pre-fills that URL. Use `demo-2` for a second role to demonstrate memory reuse. Never enter real applicant data in test fixtures.
-4. Watch the dedicated visible Chromium window. The workspace displays synchronized screenshots after each operation, rather than an interactive embedded browser.
-5. The agent fills profile facts and uploads the selected resume. Required unknown questions pause the worker. Answer through chat and check **Remember this exact answer** only if you explicitly want future reuse. Context-dependent availability is kept with the application unless you approve exact wording for reuse. Optional EEO fields remain empty; sensitive reusable answers need separate explicit consent.
-6. At review, inspect every answer/document/provenance explanation. **Edit** reconstructs all steps so changes actually reach the portal, then requires a new review.
-7. Click **Approve & submit** for that application. Approval is revision-bound. Only a recognized confirmation establishes success. View the result in **Application history**. Duplicate job IDs/URLs are blocked even when tracking query parameters change.
-8. **Pause**, **Continue**, and **Stop** work through actual backend actions. Stop cancels the worker and closes the browser. Resume after a service restart reconstructs supported forms with saved answers; login, CAPTCHA, and file uploads may need to be repeated. Submitted and uncertain submissions cannot be auto-resubmitted.
-
-Useful fixture URLs: `/mock/jobs/non-intern` is rejected; `/mock/jobs/ambiguous` requires confirmation; `/mock/jobs/malicious` contains prompt injection that cannot expand permissions.
-
-## OpenAI configuration
-
-Edit your own ignored `.env`:
-
-```dotenv
-OPENAI_API_KEY=your-own-key
-OPENAI_MODEL=gpt-4.1-mini
-BROWSER_HEADLESS=false
-ENABLE_MOCK_PORTAL=true
-```
-
-The model is configurable. Without a key the deterministic workflow still works: profile filling, exact approved memory, missing questions, review, submission, and history. With a key, Blink uses the [OpenAI Responses API](https://developers.openai.com/api/reference/python/resources/responses) for conversational help, conservative semantic question suggestions, and written drafts requested with **Help draft an answer**. There are no AI browser/OS tools. Drafts and semantic suggestions require user acceptance. Live paid API calls are **not** part of automated testing and require your own configured key.
-
-AI calls send minimal question/chat context; draft generation sends only selected verified project/experience descriptions. Contact data, resumes, grades, and eligibility are not automatically sent for drafting. Calls use `store=False`, a timeout, and bounded retries. Provider retention policies still apply. Leave the key blank to disable AI network calls entirely. More details are in [Security and privacy](docs/SECURITY.md).
-
-## Privacy and public source code
-
-**This repository contains no user applicant database or uploaded documents.** A user's profile and documents are created in their own local `.data/` directory when they run the application. They are encrypted at rest, Git-ignored, and excluded from publication. `.env`, the private access code, and the encryption key are also excluded. Frontend state and screenshots are not stored in browser localStorage. The local API uses origin/host/client checks and private access-code pairing and ephemeral bearer tokens; FastAPI telemetry is explicitly disabled.
-
-This is a local trust boundary: someone with your OS account/admin privileges or your encryption key can access local data. Employer portals receive information entered into their forms and may save it before final submission; OpenAI receives selected context when enabled. There is no claim of certified legal compliance or protection against compromised devices. Read [docs/SECURITY.md](docs/SECURITY.md) before using real applicant data.
-
-Keep secure backups of both `.data/` and its original key (or `ENCRYPTION_KEY` supplied separately). Losing the key makes data unreadable. A missing key for an existing database causes a startup error instead of silently creating a new key. This MVP has no automated key rotation. The optional mock portal keeps submitted fixture data in process memory only and is disabled in the backend unless explicitly enabled.
-
-## Tests and checks
+Open a terminal **in the Blink folder** and run:
 
 ```bash
-python -m pytest -q
-python -m ruff check backend browser_agent database mock_portal tests scripts
-python scripts/check_public_tree.py
-cd frontend
-pnpm build
-pnpm exec playwright install chromium
-pnpm test:e2e
+python3 scripts/launch.py
 ```
 
-Python tests launch the local mock portal on **8001** and use a fresh temporary encrypted database and synthetic applicant data. Stop your development mock server first. E2E tests start all three localhost services, use headless contexts, and store ignored synthetic test data in `.data/e2e`. Stop development services first for isolated E2E runs; E2E refuses to reuse existing servers and uses the built production frontend. CI runs in fresh environments. No employer forms are submitted.
+On Windows, use `py -3 scripts\launch.py` instead. The launcher explains missing prerequisites and startup problems. You never need to disable browser security settings or use an administrator account to access the website.
 
-Test coverage includes onboarding persistence, profile-derived filling, missing answers, explicit memory approval/reuse, repeated records, selected resume upload, pause/resume, non-internship rejection, URL/file/API access restrictions, malicious page content, no premature submit, revision approval, confirmed submission, review edits, duplicates, optional EEO consent, and authorization/sponsorship jurisdiction/time distinctions. Frontend tests cover the complete UI flow and mobile overflow. CI runs backend tests, lint, source hygiene, frontend build, and E2E tests.
+## Your first application
 
-## Current capability boundary
+1. Choose **Add your details**. Start with your name, contact information, and education. Everything is optional; click **Save profile** when you're done.
+2. Choose **Upload your resume** and select a PDF or Word (`.docx`) file. You can keep several resumes and choose one for each application.
+3. On **Overview**, paste a direct internship job link. To learn how Blink works first, choose **Try the local test portal**. Use synthetic information for practice; do not submit real employer forms just to test the app.
+4. Watch **Agent workspace**. Blink fills information it knows and asks you for unfamiliar answers in chat. Only choose **Remember this answer** when you want it reused.
+5. **Review everything**, edit any answers you want to change, then choose **Approve & submit**. Blink records a successful application only after it finds confirmation.
+6. Check **Application history** to see progress or resume an interrupted application.
 
-| Capability | Status |
+**Pause** puts an application on hold. **Stop** halts the agent and closes its application browser. **Lock workspace** hides your profile and locks this browser; it does not cancel an application already running.
+
+## AI help is optional
+
+You can use saved-profile filling, remembered answers, and the practice application without an OpenAI key.
+
+For AI-assisted chat and written drafts, open the `.env` file in your local Blink folder using a text editor. Set `OPENAI_API_KEY` to your own key, save it, then **Stop Blink** and **Launch Blink** again. OpenAI usage may cost money. Never share that file or upload it to GitHub.
+
+Written drafts need your review. Blink does not invent experience, grades, work authorization, or other personal facts.
+
+## Your information stays private
+
+- Your profile, saved answers, and uploaded documents are stored **encrypted on your computer**. They are excluded from GitHub.
+- The website accepts local connections only. Opening it requires a private access code or an owner-created, one-use launch link that expires after two minutes. The launcher handles this automatically; your permanent code is never placed in the link.
+- Blink's agent gets its own isolated application browser. It cannot control your desktop, your normal browser tabs, email, or unrelated websites.
+- Employer forms receive the information you enter and may save it before final submission. When optional AI is enabled, OpenAI receives the limited context used for that feature.
+- Someone with administrator access, your OS account, or your private keys can still access your local information. Keep your device secure. On a shared computer, use your own OS account and a private folder.
+
+**Do not delete `.data` to fix a startup issue.** It contains your saved information and encryption key. Losing that key can make your data unreadable. Back up that folder securely.
+
+[Read the security and privacy details](docs/SECURITY.md).
+
+## Need help?
+
+| What you see | What to do |
 | --- | --- |
-| React UI: overview, profile tabs, documents, saved answers, workspace, history | Working |
-| Encrypted normalized persistence and Alembic migration | Working |
-| Local visible browser / synchronized screenshots | Working |
-| Multi-step/repeated records and label-based form filling | Working on mock; control support available to adapters |
-| Missing-answer chat, explicit memory reuse, revision-bound review, mock submission | End-to-end tested |
-| Text, email, month/date, radios, native selects, file controls | Working |
-| Checkboxes, searchable comboboxes, conditional DOM reinspection | Implemented; adapter-specific verification required |
-| Workday/Greenhouse/Lever role selectors and scoped navigation | Experimental, conservative |
-| Employer-specific Workday repeaters/custom dropdowns/draft APIs/login transitions | Partial; pauses instead of granting general access |
-| Real ATS final submission network endpoints | Strictly limited; unrecognized endpoints blocked |
-| OpenAI structured responses, question comparison, user-requested drafts | Implemented; SDK contract tested; paid live calls not exercised |
-| CAPTCHA/authentication | Manual; unsupported redirects remain blocked |
-| Resume after restart | Reconstructs supported forms; no saved passwords or browser cookies |
-| PostgreSQL | ORM/migration structure ready; SQLite only tested; install/configure a PostgreSQL driver separately |
-| Multi-user hosting, discovery, bulk applying, auto-submit | Outside this MVP; auto-submit is disabled |
+| “This site can't be reached” | Open **Launch Blink** and wait for it to say it's ready. A bookmarked link cannot start the app by itself. |
+| “Your workspace is locked” or an expired opening link | Open **Launch Blink** again. It creates a fresh private opening link. |
+| Python or Node.js is missing | Install the two prerequisites above, then reopen the launcher. |
+| Setup cannot download a component | Check your internet connection, then launch again. Your saved data is not erased. |
+| A local port is already in use | Close an earlier Blink development server. The launcher will not take over another program's port. |
+| Employer form pauses | Read the explanation in chat. Login and CAPTCHA need your help; some workflows aren't supported yet. |
+| Submission cannot be confirmed | Check the employer's portal yourself. Blink blocks automatic resubmission to avoid duplicates. |
 
-An unsupported ATS workflow can pause before completion. Add and test a scoped adapter for that employer before expecting automatic applications there. The project prioritizes reliable local end-to-end behavior and restricted browsing, as specified.
+If you report a problem on GitHub, describe the steps using fake information. **Never attach a resume, applicant database, access code, key, or private screenshot.**
 
-## Architecture
+## For developers
 
-```text
-frontend/                  React + TypeScript + Tailwind + Vite
-backend/app/               Local API, chat actions, AI, memory, encrypted documents, tracker
-browser_agent/             Orchestrator state machine, URL policy, controller, parser, validator, adapters, resolver
-database/                  Normalized SQLAlchemy entities and Alembic migration
-mock_portal/           Synthetic multi-step internship application portal
-tests/                     Pytest integration/security/browser tests
-frontend/e2e/              Playwright UI workflow and responsive tests
-scripts/                   Cross-platform launcher and publication hygiene check
-.github/workflows/         CI
-```
-
-The orchestrator chooses permitted steps. The controller performs fixed browser actions validated by policy. The resolver uses deterministic profile mappings, exact approved memory, and review-only semantic suggestions. Browser route guards enforce requests independently of AI/page text; service workers are blocked following [Playwright's routing guidance](https://playwright.dev/python/docs/api/class-browsercontext). Applicant content lives in normalized encrypted entities with per-answer provenance (`user`, `profile`, or `draft`). No webpage content can invoke backend commands or alter permissions.
-
-## Troubleshooting
-
-- **Backend offline:** activate the environment, start the API on 8000, and check that `.env` frontend origins match `http://127.0.0.1:5173` or `http://localhost:5173`.
-- **Browser missing:** `python -m playwright install chromium`; Linux may also need `--with-deps`.
-- **Unknown/malformed control:** choose an available option; resolve validation manually in the dedicated browser. Account/CAPTCHA challenges are never bypassed. Unsupported portal URLs/endpoints need an adapter change rather than an allow-all switch.
-- **Paused after restart:** open the application in History and Continue. It replays recorded values and asks for missing ones.
-- **Submission unknown:** check the employer portal manually. Do not force another automated submission. Blink retains its duplicate lock.
-- **Slow macOS Documents dependency reads:** some synced Documents directories make large `node_modules`/virtual environments slow. Use an ordinary local clone outside a synced folder, or install the Python environment outside the source tree. User data still remains local and ignored.
+The [developer guide](docs/DEVELOPMENT.md) covers separate frontend/backend development, API configuration, migrations, tests, and the architecture. Normal use needs only **Launch Blink**.

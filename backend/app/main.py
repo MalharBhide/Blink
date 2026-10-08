@@ -2,6 +2,10 @@ import asyncio
 from contextlib import asynccontextmanager
 import secrets
 import re
+import hmac
+import time
+import os
+from pathlib import Path
 from uuid import uuid4
 from fastapi import (
     FastAPI,
@@ -15,6 +19,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import Response, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import select
@@ -22,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from alembic.config import Config
 from alembic import command
 from backend.app.config import settings, access_code
+from backend.app.local_access import consume_launch_ticket
 from backend.app.schemas import (
     ProfileInput,
     StartInput,
@@ -44,6 +50,7 @@ from browser_agent.parser import Field
 
 TOKEN = secrets.token_urlsafe(32)
 AGENTS: dict[str, AgentOrchestrator] = {}
+LOCAL_SESSIONS: dict[str, float] = {}
 
 
 @asynccontextmanager
@@ -94,7 +101,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings().origins,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Local-Client", "X-Blink-Access"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Local-Client",
+        "X-Blink-Access",
+        "X-Blink-Launch",
+        "X-Blink-Session",
+    ],
 )
 
 
@@ -108,6 +122,9 @@ async def local_only(request, call_next):
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
     return response
 
 
@@ -137,23 +154,64 @@ def validate_doc(doc_id):
 
 
 @app.get("/api/health")
-def health():
-    return {"status": "ok"}
+def health(challenge: str = ""):
+    result = {"status": "ok", "service": "blink", "pid": os.getpid()}
+    if re.fullmatch(r"[a-f0-9]{64}", challenge):
+        # A launcher proves it reached the owner's Blink instance without transmitting their key.
+        result["proof"] = hmac.digest(
+            access_code().encode(), (challenge + ":" + str(os.getpid())).encode(), "sha256"
+        ).hex()
+    return result
 
 
-@app.get("/api/session")
-def bootstrap(request: Request):
-    # Non-simple header triggers CORS preflight and prevents an arbitrary website reading a token.
-    if request.headers.get("x-local-client") != "internship-ui":
-        raise HTTPException(403, "Use the local application UI.")
-    if not secrets.compare_digest(request.headers.get("x-blink-access", ""), access_code()):
-        raise HTTPException(403, "Unlock Blink using your private local access code.")
+def session_response(request: Request):
+    now = time.monotonic()
+    LOCAL_SESSIONS.pop(request.headers.get("x-blink-session", ""), None)
+    for key, expiry in list(LOCAL_SESSIONS.items()):
+        if expiry <= now:
+            LOCAL_SESSIONS.pop(key, None)
+    if len(LOCAL_SESSIONS) >= 64:
+        LOCAL_SESSIONS.pop(next(iter(LOCAL_SESSIONS)))
+    tab_session = secrets.token_urlsafe(32)
+    LOCAL_SESSIONS[tab_session] = now + 8 * 60 * 60
     return {
         "token": TOKEN,
+        "session": tab_session,
         "ai_enabled": bool(settings().openai_api_key),
         "model": settings().openai_model,
         "mock_enabled": settings().enable_mock_portal,
     }
+
+
+def local_client(request: Request):
+    if request.headers.get("x-local-client") != "internship-ui":
+        raise HTTPException(403, "Use the local application UI.")
+
+
+@app.get("/api/session")
+def bootstrap(request: Request):
+    local_client(request)
+    supplied = request.headers.get("x-blink-access", "")
+    valid_session = LOCAL_SESSIONS.get(request.headers.get("x-blink-session", ""), 0) > time.monotonic()
+    if not (secrets.compare_digest(supplied, access_code()) or (not supplied and valid_session)):
+        raise HTTPException(403, "Open Blink with the launcher or enter your private access code.")
+    return session_response(request)
+
+
+@app.post("/api/session/launch")
+def launch_session(request: Request):
+    local_client(request)
+    if not consume_launch_ticket(request.headers.get("x-blink-launch", "")):
+        raise HTTPException(
+            403, "This opening link expired or was already used. Open Blink with the launcher again."
+        )
+    return session_response(request)
+
+
+@app.delete("/api/session", dependencies=[Depends(auth)])
+def lock_workspace(request: Request):
+    LOCAL_SESSIONS.pop(request.headers.get("x-blink-session", ""), None)
+    return {"locked": True}
 
 
 @app.get("/api/profile", dependencies=[Depends(auth)])
@@ -534,3 +592,9 @@ async def events(ws: WebSocket, app_id: str):
             await asyncio.sleep(0.4)
     except (WebSocketDisconnect, RuntimeError):
         pass
+
+
+# Packaged mode: the website and API share one localhost server. No source/data directory is exposed.
+_frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _frontend.is_dir():
+    app.mount("/", StaticFiles(directory=_frontend, html=True), name="website")

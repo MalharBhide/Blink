@@ -26,7 +26,17 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { api, BASE, connect, previewBlob, token } from "./api";
+import {
+  api,
+  BASE,
+  connect,
+  initialConnect,
+  connectNewLaunch,
+  ConnectionError,
+  clearSession,
+  previewBlob,
+  token,
+} from "./api";
 
 type RecordData = Record<string, string>;
 type Profile = {
@@ -173,7 +183,27 @@ const tabNames: Record<string, string> = {
   documents: "Documents",
   memory: "Saved answers",
 };
-const statusLabel = (s: string) => s.replaceAll("_", " ");
+const statusLabel = (s: string) =>
+  (
+    ({
+      queued: "Getting ready",
+      verifying: "Checking the internship",
+      filling: "Filling your application",
+      waiting_answer: "Needs your answer",
+      waiting_verification: "Needs your confirmation",
+      manual: "Needs your help",
+      review: "Ready to review",
+      submitting: "Submitting",
+      submitted: "Submitted",
+      submission_unknown: "Check submission",
+      paused: "Paused",
+      cancelled: "Stopped",
+      rejected: "Unsupported role",
+    }) as Record<string, string>
+  )[s] || s.replaceAll("_", " ");
+function openingError(e: ConnectionError) {
+  return e.message.includes("expired");
+}
 function Badge({ status }: { status: string }) {
   return (
     <span
@@ -208,6 +238,15 @@ export default function App() {
     [image, setImage] = useState<string | null>(null);
   const chatScroll = useRef<HTMLDivElement>(null);
   const [accessCode, setAccessCode] = useState("");
+  const [connectionState, setConnectionState] = useState<
+    "checking" | "locked" | "offline"
+  >("checking");
+  const [showHelp, setShowHelp] = useState(false);
+  const launcherName = navigator.platform.toLowerCase().includes("win")
+    ? "Launch Blink.bat"
+    : navigator.platform.toLowerCase().includes("mac")
+      ? "Launch Blink.command"
+      : "Launch Blink.sh";
   const [draftOrigin, setDraftOrigin] = useState(false);
   const [chat, setChat] = useState(""),
     [remember, setRemember] = useState(false),
@@ -234,16 +273,49 @@ export default function App() {
   }, []);
   useEffect(() => {
     let mounted = true;
-    connect()
+    initialConnect()
       .then(async (cfg) => {
         if (!mounted) return;
         setConfig(cfg);
-        setConnected(true);
         await refresh();
+        setConnected(true);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => {
+        if (!mounted) return;
+        setConnectionState(e instanceof ConnectionError ? e.kind : "offline");
+        if (!(e instanceof ConnectionError) || openingError(e))
+          setError(e.message);
+      });
     return () => {
       mounted = false;
+    };
+  }, [refresh]);
+  useEffect(() => {
+    let mounted = true;
+    const onLaunch = () => {
+      const connection = connectNewLaunch();
+      if (!connection) return;
+      connection
+        .then(async (cfg) => {
+          if (!mounted) return;
+          setConfig(cfg);
+          await refresh();
+          setConnected(true);
+          setError("");
+        })
+        .catch((e) => {
+          if (mounted) {
+            setConnectionState(
+              e instanceof ConnectionError ? e.kind : "offline",
+            );
+            setError(e.message);
+          }
+        });
+    };
+    window.addEventListener("hashchange", onLaunch);
+    return () => {
+      mounted = false;
+      window.removeEventListener("hashchange", onLaunch);
     };
   }, [refresh]);
   useEffect(() => {
@@ -486,30 +558,43 @@ export default function App() {
     ["workspace", "Agent workspace", Sparkles],
     ["history", "Application history", History],
   ] as const;
+  async function unlock(code = "") {
+    setBusy(true);
+    setError("");
+    try {
+      const cfg = await connect(code);
+      setConfig(cfg);
+      await refresh();
+      setConnected(true);
+      setAccessCode("");
+    } catch (e) {
+      setConnectionState(e instanceof ConnectionError ? e.kind : "offline");
+      setError(e instanceof Error ? e.message : "Couldn't connect to Blink.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function lock() {
+    await run(async () => {
+      await api("/session", "DELETE");
+      clearSession();
+      setConnected(false);
+      setConnectionState("locked");
+      setProfile(empty);
+      setDocs([]);
+      setApps([]);
+      setMemory([]);
+      setActive(null);
+      setImage(null);
+      setView("dashboard");
+      setError("");
+      setNotice("");
+    });
+  }
   if (!connected)
     return (
       <main className="unlock-screen">
-        <form
-          className="unlock-card"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            setBusy(true);
-            try {
-              const cfg = await connect(accessCode);
-              setConfig(cfg);
-              await refresh();
-              setConnected(true);
-              setAccessCode("");
-              setError("");
-            } catch (e) {
-              setError(
-                e instanceof Error ? e.message : "Could not unlock Blink.",
-              );
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
+        <section className="unlock-card">
           <div className="brand">
             <Zap size={28} />
             <strong>Blink</strong>
@@ -517,33 +602,88 @@ export default function App() {
           <h1>
             Apply for internships in the <em>blink</em> of an eye.
           </h1>
-          <p>Your applications. Your private workspace.</p>
-          <label>
-            Private access code
-            <input
-              type="password"
-              autoComplete="off"
-              value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value)}
-              required
-            />
-          </label>
+          <span className={`connection-pill ${connectionState}`}>
+            <span />
+            {connectionState === "checking"
+              ? "Checking your workspace…"
+              : connectionState === "offline"
+                ? "Blink isn't running yet"
+                : "Your workspace is locked"}
+          </span>
+          <p>
+            {connectionState === "offline"
+              ? "Your information is safe. Let's start Blink on this computer."
+              : "Open Blink with the launcher to securely access your saved profile."}
+          </p>
+          <ol className="launch-steps">
+            <li>Open the Blink folder on your computer.</li>
+            <li>
+              Double-click <strong>{launcherName}</strong>.
+            </li>
+            <li>
+              Your browser opens automatically. First-time setup can take a few
+              minutes.
+            </li>
+          </ol>
+          <button
+            className="primary"
+            disabled={busy || connectionState === "checking"}
+            onClick={() => unlock()}
+          >
+            {busy ? "Checking…" : "Check connection again"}
+          </button>
           <small>
-            Find your code in <code>.data/access-code</code> in your local Blink
-            folder. The launcher creates it on first start.
+            You can close the launcher window after Blink opens. Your profile
+            stays on this device.
           </small>
           {error && (
             <p className="alert error" role="alert">
               {error}
             </p>
           )}
-          <button className="primary" type="submit" disabled={busy}>
-            {busy ? "Unlocking…" : "Unlock Blink"}
-          </button>
-          <small>
-            Access codes stay on this device. Never share or commit yours.
-          </small>
-        </form>
+          {connectionState !== "offline" && connectionState !== "checking" && (
+            <details className="unlock-alternative">
+              <summary>Use an access code instead</summary>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  unlock(accessCode);
+                }}
+              >
+                <label>
+                  Private access code
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={accessCode}
+                    onChange={(e) => setAccessCode(e.target.value)}
+                    required
+                  />
+                </label>
+                <button type="submit" className="secondary" disabled={busy}>
+                  Unlock Blink
+                </button>
+              </form>
+              <small>
+                Your code is in <code>.data/access-code</code>. Keep it private.
+                The launcher handles this for you.
+              </small>
+            </details>
+          )}
+          <details className="unlock-alternative">
+            <summary>Still can't open Blink?</summary>
+            <p>
+              If the browser says it cannot connect, the launcher needs to be
+              running first. If setup asks for Python or Node.js, install them
+              using the links in the README and reopen the launcher.
+            </p>
+            <p>
+              On macOS, if a downloaded launcher is blocked, review it and use
+              the normal Finder <strong>Open</strong> action. Your browser never
+              needs reduced security settings.
+            </p>
+          </details>
+        </section>
       </main>
     );
   return (
@@ -613,17 +753,78 @@ export default function App() {
             </span>
             <button
               className="icon-btn"
+              aria-label="Lock workspace"
+              onClick={lock}
+              title="Lock this browser"
+            >
+              <ShieldCheck size={19} />
+            </button>
+            <button
+              className="icon-btn"
               aria-label="Show help"
-              onClick={() =>
-                setNotice(
-                  "Start the backend on port 8000. Complete your profile, upload a resume, then paste a direct internship URL. The agent will ask for missing answers and require approval before submitting.",
-                )
-              }
+              onClick={() => setShowHelp(true)}
             >
               <CircleHelp size={19} />
             </button>
           </div>
         </header>
+        {showHelp && (
+          <div className="help-backdrop" role="presentation">
+            <section
+              className="help-panel card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="help-title"
+            >
+              <div className="section-heading">
+                <h2 id="help-title">A little help with Blink</h2>
+                <button
+                  className="icon-btn"
+                  aria-label="Close help"
+                  onClick={() => setShowHelp(false)}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <ol>
+                <li>
+                  <strong>Add your profile.</strong> Fill in the information
+                  you'd like Blink to reuse. Click Save profile.
+                </li>
+                <li>
+                  <strong>Upload a resume.</strong> Open Applicant profile →
+                  Documents. PDF and Word files are supported.
+                </li>
+                <li>
+                  <strong>Paste an internship link.</strong> Blink fills what it
+                  knows and asks you for missing answers.
+                </li>
+                <li>
+                  <strong>Review and approve.</strong> Check every answer before
+                  choosing Approve & submit.
+                </li>
+              </ol>
+              <p>
+                The practice portal is fully tested. Employer websites are
+                experimental and may need your help. Blink never bypasses logins
+                or CAPTCHA.
+              </p>
+              <p>
+                <strong>Opening Blink next time:</strong> double-click{" "}
+                {launcherName}. Use Stop Blink to shut it down. Lock workspace
+                protects this browser without stopping a running application.
+              </p>
+              <p>
+                Your profile stays local. With AI enabled, selected context is
+                sent to OpenAI. Employer forms may save information as it is
+                entered.
+              </p>
+              <button className="primary" onClick={() => setShowHelp(false)}>
+                Got it
+              </button>
+            </section>
+          </div>
+        )}
         <main
           className={`main-content ${view === "workspace" ? "workspace-content" : ""}`}
         >
@@ -669,6 +870,63 @@ export default function App() {
                   }).format(new Date())}
                 </span>
               </div>
+              <section
+                className="getting-started card"
+                aria-label="Getting started"
+              >
+                <div>
+                  <h2>
+                    {apps.length
+                      ? "Your next application, in three steps"
+                      : "Let's get your first application ready"}
+                  </h2>
+                  <p>Start with what you know. You can add the rest later.</p>
+                </div>
+                <div className="setup-steps">
+                  <button
+                    onClick={() => {
+                      setView("profile");
+                      setTab("personal");
+                    }}
+                  >
+                    <span className={profile.personal.email ? "complete" : ""}>
+                      {profile.personal.email ? <Check size={16} /> : "1"}
+                    </span>
+                    <strong>Add your details</strong>
+                    <small>Name, contact information, and education</small>
+                    <ArrowRight size={17} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setView("profile");
+                      setTab("documents");
+                    }}
+                  >
+                    <span
+                      className={
+                        docs.some((d) => d.kind === "resume") ? "complete" : ""
+                      }
+                    >
+                      {docs.some((d) => d.kind === "resume") ? (
+                        <Check size={16} />
+                      ) : (
+                        "2"
+                      )}
+                    </span>
+                    <strong>Upload your resume</strong>
+                    <small>Choose a PDF or Word document</small>
+                    <ArrowRight size={17} />
+                  </button>
+                  <button
+                    onClick={() => document.getElementById("job-url")?.focus()}
+                  >
+                    <span>3</span>
+                    <strong>Paste an internship link</strong>
+                    <small>You review everything before submitting</small>
+                    <ArrowRight size={17} />
+                  </button>
+                </div>
+              </section>
               <section className="launch-card">
                 <div className="launch-copy">
                   <span className="mini-label">
@@ -683,7 +941,7 @@ export default function App() {
                     it needs you, and waits for your final approval.
                   </p>
                   <div className="supported">
-                    <span>WORKDAY</span>
+                    <span>Experimental support · WORKDAY</span>
                     <i />
                     <span>Greenhouse</span>
                     <i />
@@ -877,8 +1135,9 @@ export default function App() {
               <div className="footer-note">
                 <ShieldCheck size={15} />
                 <span>
-                  Your documents stay encrypted on this device. AI only receives
-                  the context needed to help.
+                  Your profile and documents are encrypted on this device. AI
+                  help is optional; employer portals receive the application
+                  details you enter.
                 </span>
                 <span>BUILT FOR YOUR NEXT STEP</span>
               </div>
@@ -934,8 +1193,8 @@ export default function App() {
                   <div>
                     <h3>{tabNames[tab]}</h3>
                     <p>
-                      Every field is optional during onboarding. Save any
-                      changes before starting an application.
+                      Start with your name and contact details. Everything is
+                      optional. Use Save profile to keep your changes.
                     </p>
                   </div>
                 </div>
@@ -1249,7 +1508,25 @@ export default function App() {
                 {!filtered.length && (
                   <div className="empty-apps">
                     <History size={25} />
-                    <p>No applications found.</p>
+                    <h3>
+                      {query
+                        ? "No matching applications"
+                        : "Your applications will appear here"}
+                    </h3>
+                    <p>
+                      {query
+                        ? "Try a company name, job title, or a different search."
+                        : "Once you start an application, you can track it and pick up where you left off here."}
+                    </p>
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        setQuery("");
+                        setView("dashboard");
+                      }}
+                    >
+                      Go to overview <ArrowRight size={16} />
+                    </button>
                   </div>
                 )}
               </section>
