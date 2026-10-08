@@ -125,6 +125,7 @@ class AgentOrchestrator:
     async def run(self):
         cfg = settings()
         app = get_application(self.app_id)
+        phase = "preparing the application"
         try:
             self.state("verifying", error=None, pending=None, step=0)
             policy = await asyncio.wait_for(
@@ -145,14 +146,18 @@ class AgentOrchestrator:
                 self.app_id,
                 "Opening an isolated browser to verify the role. Browser preview refreshes after each action.",
             )
+            phase = "starting the isolated browser"
             await self.controller.start()
+            phase = "loading the approved page"
             await self.navigate_workflow(policy.verification_url)
             # An approved redirect selects the ATS adapter and its scoped public resource rules.
             detected = "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
             adapter = ADAPTERS[detected]()
             await self.controller.snapshot()
+            phase = "waiting for the portal to render"
             rendered = await adapter.wait_ready(self.controller.page)
             await self.checkpoint()
+            phase = "reading the job title"
             verdict = await inspect_job(self.controller.page, adapter)
             await self.controller.snapshot()
             self.state("verifying", job=asdict(verdict), platform=detected)
@@ -196,6 +201,7 @@ class AgentOrchestrator:
                         ),
                         timeout=15,
                     )
+            phase = "completing the application"
             self.state("filling", pending=None)
             log(
                 self.app_id,
@@ -427,7 +433,7 @@ class AgentOrchestrator:
                         "paused",
                         error=f"Agent paused: {exc}"
                         if isinstance(exc, PolicyError)
-                        else f"Agent paused ({type(exc).__name__}). Browser or portal operation could not safely continue.",
+                        else f"Agent paused while {phase} ({type(exc).__name__}). Browser or portal operation could not safely continue.",
                     )
                 log(
                     self.app_id,

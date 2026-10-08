@@ -383,3 +383,21 @@ async def test_approved_get_retries_only_internal_error_page_race(public_dns):
     with pytest.raises(PlaywrightError):
         await c.navigate(WORKDAY)
     assert c.page.goto.await_count == 1
+
+
+async def test_preview_error_is_nonfatal_and_clears_stale_image(public_dns):
+    from unittest.mock import AsyncMock
+    from playwright.async_api import Error as PlaywrightError
+
+    p = WorkflowPolicy(WORKDAY)
+    c = BrowserController(p)
+    c.screenshot = b"previous-frame"
+    c.page = SimpleNamespace(
+        is_closed=lambda: False,
+        screenshot=AsyncMock(side_effect=PlaywrightError("preview renderer unavailable")),
+    )
+    assert await c.snapshot() is None
+    assert c.screenshot is None
+    assert not p.stopped
+    assert not p.submission_permit
+    assert p.allowed_pages == WorkflowPolicy(WORKDAY).allowed_pages

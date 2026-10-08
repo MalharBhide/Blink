@@ -184,7 +184,12 @@ class BrowserController:
 
     async def snapshot(self):
         if self.page and not self.page.is_closed():
-            self.screenshot = await self.page.screenshot(type="jpeg", quality=65)
+            try:
+                self.screenshot = await self.page.screenshot(type="jpeg", quality=65, timeout=5000)
+            except PlaywrightError:
+                # Preview is optional; rendering failures must not abort the
+                # validated workflow or expose Playwright/DOM diagnostics.
+                self.screenshot = None
         return self.screenshot
 
     def locator(self, field):
