@@ -26,7 +26,7 @@ class AnswerInput(BaseModel):
 
 
 class ActionInput(BaseModel):
-    action: Literal["pause", "continue", "cancel", "stop"]
+    action: Literal["pause", "continue", "cancel", "stop", "retry"]
 
 
 class ApproveInput(BaseModel):

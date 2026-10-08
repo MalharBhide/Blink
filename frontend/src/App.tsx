@@ -16,6 +16,7 @@ import {
   Pause,
   Play,
   Plus,
+  RotateCcw,
   Send,
   ShieldCheck,
   Sparkles,
@@ -1555,6 +1556,15 @@ export default function App() {
                 {active && (
                   <div className="workspace-actions">
                     <Badge status={active.status} />
+                    {active.status === "rejected" && (
+                      <button
+                        className="secondary"
+                        onClick={() => action("retry")}
+                        disabled={busy}
+                      >
+                        <RotateCcw size={15} /> Check link again
+                      </button>
+                    )}
                     {["paused", "manual"].includes(active.status) ? (
                       <button
                         className="secondary"

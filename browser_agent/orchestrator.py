@@ -13,10 +13,12 @@ from backend.app.memory import get_profile, remember, SENSITIVE, APPLICATION_ONL
 from backend.app.tracker import get_application, update, log, save_answer
 from database.session import session
 from database.models import Application
+from sqlalchemy import select
 
 TERMINAL = {"submitted", "cancelled", "rejected"}
 TRANSITIONS = {
     "queued": {"verifying", "cancelled"},
+    "rejected": {"paused"},
     "verifying": {"waiting_verification", "waiting_workflow", "filling", "rejected", "paused", "cancelled"},
     "waiting_verification": {"filling", "cancelled", "rejected", "paused"},
     "filling": {"waiting_answer", "waiting_workflow", "manual", "review", "paused", "cancelled", "rejected"},
@@ -113,7 +115,7 @@ class AgentOrchestrator:
                 if not target:
                     raise
                 if canonical(target) in self.controller.policy.allowed_pages:
-                    url = canonical(target)
+                    url = target
                 else:
                     url = await self.confirm_destination(
                         self.controller.policy, target, "The link redirects to a new page."
@@ -144,18 +146,20 @@ class AgentOrchestrator:
                 "Opening an isolated browser to verify the role. Browser preview refreshes after each action.",
             )
             await self.controller.start()
-            await self.navigate_workflow(policy.initial_url)
-            # Redirects may lead to a different ATS; its adapter changes, not permissions.
+            await self.navigate_workflow(policy.verification_url)
+            # An approved redirect selects the ATS adapter and its scoped public resource rules.
             detected = "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
             adapter = ADAPTERS[detected]()
-            await self.controller.page.wait_for_timeout(500)
+            await self.controller.snapshot()
+            rendered = await adapter.wait_ready(self.controller.page)
+            await self.checkpoint()
             verdict = await inspect_job(self.controller.page, adapter)
             await self.controller.snapshot()
             self.state("verifying", job=asdict(verdict), platform=detected)
-            if not verdict.title:
+            if not verdict.title or not rendered:
                 self.state(
                     "paused",
-                    error="This portal did not expose a readable job title. Paste the employer's direct internship listing; scripts or embedded forms may be unsupported.",
+                    error="This portal did not expose a readable job title. Paste the employer's direct internship listing. The portal may be unavailable or need a resource this adapter does not yet support. No fields were filled.",
                 )
                 return
             if verdict.status == "rejected":
@@ -226,14 +230,30 @@ class AgentOrchestrator:
                     adapter = ADAPTERS[
                         "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
                     ]()
+            await adapter.wait_ready(self.controller.page)
             for step in range(30):
                 await self.checkpoint()
                 update(self.app_id, step=step)
+                choice = await adapter.application_choice(self.controller.page)
+                if choice:
+                    try:
+                        await self.controller.choose_application(choice)
+                    except Exception:
+                        target = self.controller.pending_navigation
+                        if not target:
+                            raise
+                        if canonical(target) not in policy.allowed_pages:
+                            target = await self.confirm_destination(
+                                policy, target, "The manual application opens this job's application page."
+                            )
+                        await self.navigate_workflow(target)
+                    await self.controller.page.wait_for_timeout(500)
                 if await adapter.manual_challenge(self.controller.page):
+                    await self.controller.snapshot()
                     self.state("manual", pending=None)
                     log(
                         self.app_id,
-                        "Login or CAPTCHA needs your attention. Complete it in the dedicated browser and press Continue. No password is collected by this app.",
+                        adapter.manual_message,
                     )
                     self.gate.clear()
                     await self.checkpoint()
@@ -381,10 +401,11 @@ class AgentOrchestrator:
                         )
                     await self.controller.snapshot()
                     return
+                await self.controller.snapshot()
                 self.state("manual")
                 log(
                     self.app_id,
-                    "This employer’s next control or network endpoint is unsupported. I paused safely. Use the browser within this requisition and Continue, or cancel.",
+                    adapter.unsupported_message,
                 )
                 self.gate.clear()
                 await self.checkpoint()
@@ -497,6 +518,56 @@ class AgentOrchestrator:
                 self.app_id,
                 "Continuing with saved answers. Login and CAPTCHA may need to be repeated after a restart.",
             )
+
+    async def retry(self):
+        async with self.lock:
+            app = get_application(self.app_id)
+            if app.status != "rejected" or (self.task and not self.task.done()):
+                raise ValueError("Only a finished rejected attempt can be checked again.")
+            if self.controller:
+                await self.controller.close()
+            with session() as db:
+                other = db.scalar(
+                    select(Application).where(
+                        Application.id != self.app_id,
+                        Application.status.not_in(
+                            ["submitted", "rejected", "cancelled", "paused", "submission_unknown"]
+                        ),
+                    )
+                )
+                if other:
+                    raise ValueError(
+                        "Pause or stop your current application before checking this link again."
+                    )
+            # Preserve prior attempt data in encrypted history; it does not
+            # authorize the new run or supply automatically reused answers.
+            previous = app.data.get("previous_attempts", [])
+            previous.append(
+                {
+                    "job": app.data.get("job"),
+                    "answers": app.data.get("answers", []),
+                    "warnings": app.data.get("warnings", []),
+                    "error": app.data.get("error"),
+                    "revision": app.revision,
+                }
+            )
+            # Revalidate from the listing; no earlier submission or workflow
+            # permission is carried into this new verification attempt.
+            self.state(
+                "paused",
+                previous_attempts=previous,
+                pending=None,
+                answers=[],
+                warnings=[],
+                job=None,
+                workflow_destinations=[],
+                approved_revision=None,
+            )
+            self.prior_state = None
+            self.approval.clear()
+            self.gate.set()
+            log(self.app_id, "Checking the original listing again with fresh verification and permissions.")
+            await self.start()
 
     async def approve(self, revision):
         async with self.lock:

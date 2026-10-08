@@ -27,7 +27,9 @@ async def inspect_job(page, adapter):
     title = await adapter.title(page)
     status = classify_title(title)
     # Structured metadata cannot override an explicitly conflicting visible role.
-    headers = page.locator('h1, [data-job-title], [data-automation-id="jobPostingHeader"]')
+    headers = page.locator(
+        f'h1, [data-job-title], [data-automation-id="jobPostingHeader"], {adapter.title_selector}'
+    )
     for i in range(min(await headers.count(), 12)):
         if await headers.nth(i).is_visible():
             visible = (await headers.nth(i).inner_text()).strip()
@@ -55,7 +57,9 @@ async def application_matches_job(page, adapter, verdict):
         return {"intern" if x in ("internship", "internships") else x for x in values}
 
     expected = words(verdict.title)
-    visible_headers = page.locator('h1, [data-job-title], [data-automation-id="jobPostingHeader"]')
+    visible_headers = page.locator(
+        f'h1, [data-job-title], [data-automation-id="jobPostingHeader"], {adapter.title_selector}'
+    )
     for i in range(min(await visible_headers.count(), 12)):
         if not await visible_headers.nth(i).is_visible():
             continue

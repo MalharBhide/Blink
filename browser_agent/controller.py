@@ -1,10 +1,21 @@
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
 from browser_agent.policy import PolicyError
 from browser_agent.policy import canonical, public_host
 from browser_agent.parser import parse_form
 import json
 import asyncio
 from urllib.parse import urlsplit, urljoin
+from html.parser import HTMLParser
+
+
+class OracleBootstrap(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.site = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "base":
+            self.site = dict(attrs).get("data-sitenumber")
 
 
 class BrowserController:
@@ -82,6 +93,37 @@ class BrowserController:
         # Chromium can follow a redirect without invoking the same route handler
         # again. Fetch one hop, then fulfill; never forward an unchecked Location.
         response = await route.fetch(max_redirects=0, timeout=20000)
+        # Versioned static bundles commonly redirect within their approved CDN
+        # paths. Follow only read-only asset hops that independently pass policy.
+        asset_url = req.url
+        for _ in range(4):
+            if not (
+                req.method == "GET"
+                and self.policy.static_redirect(asset_url, req.resource_type)
+                and 300 <= response.status < 400
+                and response.headers.get("location")
+            ):
+                break
+            target = urljoin(asset_url, response.headers["location"])
+            if not (
+                self.policy.static_redirect(target, req.resource_type)
+                and self.policy.request_allowed(target, req.resource_type, "GET")
+            ):
+                break
+            await asyncio.wait_for(asyncio.to_thread(public_host, urlsplit(target).hostname), 8)
+            if self.policy.stopped:
+                await route.abort("blockedbyclient")
+                return
+            response = await route.fetch(
+                url=target,
+                max_redirects=0,
+                timeout=20000,
+                headers={
+                    "accept": req.headers.get("accept", "*/*"),
+                    "user-agent": req.headers.get("user-agent", ""),
+                },
+            )
+            asset_url = target
         if req.method == "POST":
             self.submission_response_status = response.status
         if 300 <= response.status < 400 and response.headers.get("location"):
@@ -94,12 +136,37 @@ class BrowserController:
             )
             await route.abort("blockedbyclient")
             return
+        if (
+            req.resource_type == "document"
+            and self.policy.platform == "oracle"
+            and "text/html" in response.headers.get("content-type", "")
+        ):
+            bootstrap = OracleBootstrap()
+            bootstrap.feed((await response.text())[:2000000])
+            self.policy.configure_oracle_site(bootstrap.site)
         await route.fulfill(response=response)
 
     async def navigate(self, url):
         self.policy.navigation(url)
+        await asyncio.to_thread(self.policy.activate_portal, url)
         self.pending_navigation = None
-        await self.page.goto(url, wait_until="domcontentloaded")
+        for attempt in range(2):
+            self.policy.navigation(url)
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded")
+                break
+            except PlaywrightError as exc:
+                # Chromium can finish committing a previously aborted document's
+                # internal error page during the next approved GET navigation.
+                # Retry only this specific race, never a new destination or POST.
+                if (
+                    attempt
+                    or self.pending_navigation
+                    or self.policy.stopped
+                    or "chrome-error://chromewebdata/" not in str(exc)
+                ):
+                    raise
+                await asyncio.sleep(0.15)
         self.check_current_navigation()
 
     def check_current_navigation(self):
@@ -180,6 +247,19 @@ class BrowserController:
             raise PolicyError("An Apply control beside applicant fields requires final review.")
         self.pending_navigation = None
         await button.click()
+        self.check_current_navigation()
+
+    async def choose_application(self, button):
+        self.policy.interaction(self.page.url)
+        if self.policy.platform != "workday":
+            raise PolicyError("Application choices require a scoped platform adapter.")
+        choice = self.page.get_by_role("dialog").get_by_role("button", name="Apply Manually", exact=True)
+        if await choice.filter(visible=True).count() != 1:
+            raise PolicyError("Application entry choice is ambiguous.")
+        if await button.inner_text() != "Apply Manually":
+            raise PolicyError("Only the manual application entry is supported.")
+        self.pending_navigation = None
+        await choice.first.click()
         self.check_current_navigation()
 
     async def submission_form(self, button):

@@ -4,7 +4,7 @@
 
 Blink is a local, single-user MVP with a React/TypeScript/Tailwind frontend, FastAPI backend, encrypted SQLite persistence through SQLAlchemy/Alembic, a restricted Playwright browser agent, WebSocket updates, and optional OpenAI integration.
 
-**The complete onboarding → profile → document upload → automatic form filling → missing-answer chat → remembered answers → review → approved submission → confirmed history flow works against the included local multi-step mock portal.** Direct public HTTPS links use platform detection or the generic semantic form adapter. Synthetic unfamiliar-site HTML forms are also tested through approved submission. Real Workday, Greenhouse, Lever, Ashby, SmartRecruiters, iCIMS, and other employer workflows remain conservative and experimental. They parse known semantics and pause at unsupported employer-specific controls, redirects, authentication, or network endpoints. This is not a universal real-employer auto-apply service. No real employer submission is used in automated tests.
+**The complete onboarding → profile → document upload → automatic form filling → missing-answer chat → remembered answers → review → approved submission → confirmed history flow works against the included local multi-step mock portal.** Direct public HTTPS links use platform detection or the generic semantic form adapter. Synthetic unfamiliar-site HTML forms are also tested through approved submission. Real Workday, Greenhouse, Lever, Ashby, SmartRecruiters, iCIMS, Avature, Oracle Recruiting, and other employer workflows remain conservative and experimental. They parse known semantics and pause at unsupported employer-specific controls, redirects, authentication, or network endpoints. This is not a universal real-employer auto-apply service. No real employer submission is used in automated tests. Public Workday listings and their Apply modal, Oracle listings and email entry screens, and Avature job-specific login pages have also been checked read-only. Those checks establish page loading and entry navigation, not authenticated completion. Account/profile APIs, login POSTs, email verification, and custom draft/save APIs remain unsupported and blocked.
 
 ## Quick start
 
@@ -101,26 +101,26 @@ Test coverage includes onboarding persistence, profile-derived filling, missing 
 
 ## Current capability boundary
 
-| Capability | Status |
-| --- | --- |
-| React UI: overview, profile tabs, documents, saved answers, workspace, history | Working |
-| Encrypted normalized persistence and Alembic migration | Working |
-| Local visible browser / synchronized screenshots | Working |
-| Multi-step/repeated records and label-based form filling | Working on mock; control support available to adapters |
-| Missing-answer chat, explicit memory reuse, revision-bound review, mock submission | End-to-end tested |
-| Text, email, month/date, radios, native selects, file controls | Working |
-| Checkboxes, searchable comboboxes, conditional DOM reinspection | Implemented; adapter-specific verification required |
-| Public HTTPS links, functional query IDs, generic labeled HTML forms and POST submission | Working in synthetic unfamiliar-site tests; real employer compatibility varies |
-| Workday/Greenhouse/Lever/Ashby/SmartRecruiters/iCIMS platform detection/selectors | Experimental, conservative |
-| Exact user-confirmed Apply/next-step destinations and redirects | Implemented and tested; never grants whole domains |
-| Employer-specific Workday repeaters/custom dropdowns/draft APIs/login transitions | Partial; pauses instead of granting general access |
-| HTML form final POST endpoints | Exact targets only; unfamiliar actions require destination confirmation and final revision approval |
-| Custom JavaScript upload/draft/submission APIs and embedded forms | Unsupported unless an explicitly scoped adapter handles them |
-| OpenAI structured responses, question comparison, user-requested drafts | Implemented; SDK contract tested; paid live calls not exercised |
-| CAPTCHA/authentication | Manual; unsupported redirects remain blocked |
-| Resume after restart | Reconstructs supported forms; no saved passwords or browser cookies |
-| PostgreSQL | ORM/migration structure ready; SQLite only tested; install/configure a PostgreSQL driver separately |
-| Multi-user hosting, discovery, bulk applying, auto-submit | Outside this MVP; auto-submit is disabled |
+| Capability                                                                                       | Status                                                                                              |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| React UI: overview, profile tabs, documents, saved answers, workspace, history                   | Working                                                                                             |
+| Encrypted normalized persistence and Alembic migration                                           | Working                                                                                             |
+| Local visible browser / synchronized screenshots                                                 | Working                                                                                             |
+| Multi-step/repeated records and label-based form filling                                         | Working on mock; control support available to adapters                                              |
+| Missing-answer chat, explicit memory reuse, revision-bound review, mock submission               | End-to-end tested                                                                                   |
+| Text, email, month/date, radios, native selects, file controls                                   | Working                                                                                             |
+| Checkboxes, searchable comboboxes, conditional DOM reinspection                                  | Implemented; adapter-specific verification required                                                 |
+| Public HTTPS links, functional query IDs, generic labeled HTML forms and POST submission         | Working in synthetic unfamiliar-site tests; real employer compatibility varies                      |
+| Workday/Greenhouse/Lever/Ashby/SmartRecruiters/iCIMS/Avature/Oracle platform detection/selectors | Experimental, conservative                                                                          |
+| Exact user-confirmed Apply/next-step destinations and redirects                                  | Implemented and tested; never grants whole domains                                                  |
+| Employer-specific Workday repeaters/custom dropdowns/draft APIs/login transitions                | Partial; pauses instead of granting general access                                                  |
+| HTML form final POST endpoints                                                                   | Exact targets only; unfamiliar actions require destination confirmation and final revision approval |
+| Custom JavaScript upload/draft/submission APIs and embedded forms                                | Unsupported unless an explicitly scoped adapter handles them                                        |
+| OpenAI structured responses, question comparison, user-requested drafts                          | Implemented; SDK contract tested; paid live calls not exercised                                     |
+| CAPTCHA/authentication                                                                           | Manual; unsupported redirects remain blocked                                                        |
+| Resume after restart                                                                             | Reconstructs supported forms; no saved passwords or browser cookies                                 |
+| PostgreSQL                                                                                       | ORM/migration structure ready; SQLite only tested; install/configure a PostgreSQL driver separately |
+| Multi-user hosting, discovery, bulk applying, auto-submit                                        | Outside this MVP; auto-submit is disabled                                                           |
 
 An unsupported ATS workflow can pause before completion. Add and test a scoped adapter for that employer before expecting automatic applications there. The project prioritizes reliable local end-to-end behavior and restricted browsing, as specified.
 

@@ -6,7 +6,7 @@ Fill out your profile once, upload your resume, and let Blink help with repetiti
 
 Blink runs **on your own computer**. There is no account to create and no shared applicant database. GitHub hosts the source code, not the running website or your information.
 
-> **Link support:** paste a direct public HTTPS internship link from an employer or application portal. Blink uses a general form reader, plus platform adapters for Workday, Greenhouse, Lever, Ashby, SmartRecruiters, and iCIMS. The practice portal and unfamiliar-site HTML forms are tested end to end. Employer-specific forms remain experimental: accepting a link does not guarantee Blink can finish every application.
+> **Link support:** paste a direct public HTTPS internship link from an employer or application portal. Blink uses a general form reader, plus platform adapters for Workday, Greenhouse, Lever, Ashby, SmartRecruiters, iCIMS, Avature, and Oracle Recruiting. The practice portal and unfamiliar-site HTML forms are tested end to end. Employer-specific forms remain experimental: accepting a link does not guarantee Blink can finish every application.
 
 ## Open Blink
 
@@ -16,11 +16,11 @@ Blink runs **on your own computer**. There is no account to create and no shared
 2. **Install its two prerequisites** if you don't already have them: [Python](https://www.python.org/downloads/) **3.12 or newer**, and [Node.js](https://nodejs.org/en/download) **22.12 or newer**. Choose the Node.js LTS installer. On Windows, check **Add Python to PATH** in the Python installer. Close and reopen any old terminal windows afterward.
 3. **Open the Blink folder** and start the launcher for your computer:
 
-   | Computer | Open this file |
-   | --- | --- |
-   | macOS | Double-click **Launch Blink.command** |
-   | Windows | Double-click **Launch Blink.bat** |
-   | Linux | Run **Launch Blink.sh** from a terminal |
+   | Computer | Open this file                          |
+   | -------- | --------------------------------------- |
+   | macOS    | Double-click **Launch Blink.command**   |
+   | Windows  | Double-click **Launch Blink.bat**       |
+   | Linux    | Run **Launch Blink.sh** from a terminal |
 
 4. **Wait for setup.** The first launch downloads the required components and application browser, then prepares the website. It needs an internet connection and may take a few minutes. Later launches reuse what's installed.
 5. **Your browser opens automatically**, with your private workspace unlocked. You do **not** need to find an access-code file or start several servers.
@@ -63,6 +63,12 @@ Use the direct posting or application link, rather than a company's homepage, a 
 
 On unfamiliar sites, Blink can read labeled text fields, dropdowns, radio buttons, checkboxes, and upload controls. It supports ordinary HTML forms that submit to an explicitly approved endpoint, as well as the tested practice workflow. Apply buttons and new application steps can lead to another exact page after your confirmation.
 
+Workday links using either `/job/` or `/details/` are recognized. Its Apply button is used inside the page, then **Apply Manually** is selected. For Oracle links ending in `/apply/email`, Blink first opens the associated listing to verify the role. Avature links can reach only the selected job's login screen. Necessary public scripts, translations, and job metadata have narrowly scoped read permissions.
+
+These adapters **do not yet complete account sign-in, Oracle email verification, or employer-specific draft/save APIs**. Opening an application screen is not a completed application. Those flows may still be blocked even if you interact manually. Blink explains the unsupported step and does not collect passwords or bypass CAPTCHA.
+
+If an older attempt was incorrectly rejected, open it in **Application history → Agent workspace → Check link again**. This rechecks the original job with fresh permissions and preserves the prior attempt's answers in encrypted history. Paused attempts use **Continue**. Submitted or uncertain submissions cannot be retried.
+
 Some portals require custom APIs, third-party scripts, embedded forms, accounts, or CAPTCHA. Those can still pause. Blink keeps its browser restrictions active and tells you when it cannot continue safely. It cannot guarantee automatic completion on every employer's website.
 
 ## AI help is optional
@@ -87,15 +93,15 @@ Written drafts need your review. Blink does not invent experience, grades, work 
 
 ## Need help?
 
-| What you see | What to do |
-| --- | --- |
-| “This site can't be reached” | Open **Launch Blink** and wait for it to say it's ready. A bookmarked link cannot start the app by itself. |
-| “Your workspace is locked” or an expired opening link | Open **Launch Blink** again. It creates a fresh private opening link. |
-| Python or Node.js is missing | Install the two prerequisites above, then reopen the launcher. |
-| Setup cannot download a component | Check your internet connection, then launch again. Your saved data is not erased. |
-| A local port is already in use | Close an earlier Blink development server. The launcher will not take over another program's port. |
-| Employer form pauses | Read the explanation in chat. Login and CAPTCHA need your help; some workflows aren't supported yet. |
-| Submission cannot be confirmed | Check the employer's portal yourself. Blink blocks automatic resubmission to avoid duplicates. |
+| What you see                                          | What to do                                                                                                 |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| “This site can't be reached”                          | Open **Launch Blink** and wait for it to say it's ready. A bookmarked link cannot start the app by itself. |
+| “Your workspace is locked” or an expired opening link | Open **Launch Blink** again. It creates a fresh private opening link.                                      |
+| Python or Node.js is missing                          | Install the two prerequisites above, then reopen the launcher.                                             |
+| Setup cannot download a component                     | Check your internet connection, then launch again. Your saved data is not erased.                          |
+| A local port is already in use                        | Close an earlier Blink development server. The launcher will not take over another program's port.         |
+| Employer form pauses                                  | Read the explanation in chat. Login and CAPTCHA need your help; some workflows aren't supported yet.       |
+| Submission cannot be confirmed                        | Check the employer's portal yourself. Blink blocks automatic resubmission to avoid duplicates.             |
 
 If you report a problem on GitHub, describe the steps using fake information. **Never attach a resume, applicant database, access code, key, or private screenshot.**
 

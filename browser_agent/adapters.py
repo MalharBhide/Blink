@@ -1,10 +1,22 @@
+import asyncio
+import time
 import re
 import json
+from html import unescape
 
 
 class BaseAdapter:
     name = "generic"
+    manual_message = (
+        "Login or CAPTCHA needs your attention in the dedicated browser. No password is collected by Blink. "
+        "If the portal's login request is blocked, that authentication flow is unsupported; cancel and complete it yourself. "
+        "Press Continue only after the challenge is complete."
+    )
     title_selector = "h1"
+    unsupported_message = (
+        "This employer's next control or network endpoint is unsupported. Blink paused safely. "
+        "Cancel and complete this application yourself if the portal cannot advance within these restrictions."
+    )
     company_selector = "[data-job-company]"
 
     async def title(self, page):
@@ -26,14 +38,29 @@ class BaseAdapter:
                     if record.get("@type") == "JobPosting" and isinstance(record.get("title"), str):
                         titles.append(record["title"][:500])
         if len(titles) == 1:
-            return titles[0].strip()
+            return unescape(titles[0]).strip()
         if len(titles) > 1:
             return ""  # A results page cannot verify one particular role.
-        el = page.locator(self.title_selector)
-        for i in range(min(await el.count(), 8)):
-            if await el.nth(i).is_visible():
-                return (await el.nth(i).inner_text()).strip()[:500]
+        # CSS comma groups return document order, not selector priority. Prefer
+        # a portal's job heading over its earlier global career-site header.
+        for selector in self.title_selector.split(","):
+            el = page.locator(selector.strip())
+            for i in range(min(await el.count(), 8)):
+                if await el.nth(i).is_visible():
+                    return (await el.nth(i).inner_text()).strip()[:500]
         return ""
+
+    async def wait_ready(self, page, timeout=15):
+        """Wait for rendered content, rather than only server-side JSON metadata."""
+        deadline = time.monotonic() + timeout
+        controls = page.locator('h1, h2, input:not([type="hidden"]), button, select, a').filter(visible=True)
+        while time.monotonic() < deadline:
+            if await controls.count() and await self.title(page):
+                return True
+            if await self.manual_challenge(page):
+                return True
+            await asyncio.sleep(0.2)
+        return False
 
     async def company(self, page):
         el = page.locator(self.company_selector)
@@ -72,6 +99,9 @@ class BaseAdapter:
                 return buttons.nth(i)
         return None
 
+    async def application_choice(self, page):
+        return None
+
     async def submit_button(self, page):
         el = page.get_by_role(
             "button", name=re.compile(r"^(submit|submit application|send application|apply)$", re.I)
@@ -90,7 +120,9 @@ class BaseAdapter:
         return (
             await page.locator(
                 'input[type=password], input[autocomplete="one-time-code"], input[name*="password" i], input[name*="passcode" i], iframe[src*="captcha"], [data-captcha], [data-login]'
-            ).count()
+            )
+            .filter(visible=True)
+            .count()
             > 0
         )
 
@@ -132,7 +164,35 @@ class WorkdayAdapter(BaseAdapter):
     title_selector = '[data-automation-id="jobPostingHeader"], h1, h2[data-automation-id="jobPostingHeader"]'
     company_selector = '[data-automation-id="companyName"], [data-job-company]'
 
+    unsupported_message = (
+        "Workday's application step needs an account/profile or form API this adapter does not yet support. "
+        "Blink opened the application entry but has not completed it. Cancel and finish it yourself."
+    )
+
+    async def title(self, page):
+        title = await super().title(page)
+        if "/apply" in page.url and re.fullmatch(r".*career(?:s)? site", title, re.I):
+            return ""  # Global branding does not identify a different job.
+        return title
+
+    async def wait_ready(self, page, timeout=15):
+        deadline = time.monotonic() + timeout
+        header = page.locator('[data-automation-id="jobPostingHeader"]').filter(visible=True)
+        while time.monotonic() < deadline:
+            if await header.count() or await self.manual_challenge(page):
+                return True
+            await asyncio.sleep(0.2)
+        return False
+
+    async def application_choice(self, page):
+        choice = page.get_by_role("dialog").get_by_role("button", name="Apply Manually", exact=True)
+        return choice.first if await choice.filter(visible=True).count() else None
+
     async def apply_link(self, page):
+        # Workday's Apply handler opens a modal in its SPA. A fresh navigation
+        # to the anchor href can load the listing instead of the application.
+        if await self.apply_button(page):
+            return None
         el = page.locator('[data-automation-id="adventureButton"]')
         if await el.count():
             return await el.first.get_attribute("href")
@@ -174,6 +234,32 @@ class ICIMSAdapter(GenericAdapter):
     title_selector = ".iCIMS_Header h1, h1, [data-job-title]"
 
 
+class AvatureAdapter(GenericAdapter):
+    name = "avature"
+    title_selector = ".article__header__text__title, .article__header h2, main h1, main h2"
+
+
+class OracleAdapter(GenericAdapter):
+    name = "oracle"
+    manual_message = (
+        "This application needs employer email verification. This adapter can open the email screen, "
+        "but does not yet support its verification API. Cancel and complete the application yourself. "
+        "Blink has not sent your email or submitted this application."
+    )
+
+    async def manual_challenge(self, page):
+        if page.url.rstrip("/").endswith("/apply/email"):
+            return (
+                await page.get_by_role("textbox", name="Email Address", exact=True)
+                .filter(visible=True)
+                .count()
+                > 0
+            )
+        return await super().manual_challenge(page)
+
+    title_selector = '[data-bind*="jobTitle"], .job-details__title, h1, h2.job-details__title'
+
+
 ADAPTERS = {
     "workday": WorkdayAdapter,
     "greenhouse": GreenhouseAdapter,
@@ -183,4 +269,6 @@ ADAPTERS = {
     "ashby": AshbyAdapter,
     "smartrecruiters": SmartRecruitersAdapter,
     "icims": ICIMSAdapter,
+    "avature": AvatureAdapter,
+    "oracle": OracleAdapter,
 }

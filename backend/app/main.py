@@ -315,7 +315,8 @@ async def start_application(body: StartInput):
                 (
                     row
                     for row in db.scalars(select(Application))
-                    if any(
+                    if job_key(row.data["url"], settings().enable_mock_portal) == key
+                    or any(
                         not dest["submission"] and job_key(dest["url"], settings().enable_mock_portal) == key
                         for dest in row.data.get("workflow_destinations", [])
                     )
@@ -387,9 +388,13 @@ async def answer(app_id: str, body: AnswerInput):
 @app.post("/api/applications/{app_id}/action", dependencies=[Depends(auth)])
 async def action(app_id: str, body: ActionInput):
     agent = agent_for(app_id)
-    await {"pause": agent.pause, "continue": agent.resume, "cancel": agent.stop, "stop": agent.stop}[
-        body.action
-    ]()
+    await {
+        "pause": agent.pause,
+        "continue": agent.resume,
+        "cancel": agent.stop,
+        "stop": agent.stop,
+        "retry": agent.retry,
+    }[body.action]()
     return application_view(get_application(app_id))
 
 
