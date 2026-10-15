@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.request
 import webbrowser
 
@@ -102,8 +103,13 @@ def runtime():
             "Node.js 22.12 or newer is missing. Install the LTS version from https://nodejs.org/, then open Launch Blink again."
         )
     # Reuse a deliberately configured environment; otherwise isolate downloaded dependencies.
-    if cfg.get("python") != python and not (Path(python).parent.parent / "pyvenv.cfg").exists():
+    if not (Path(python).parent.parent / "pyvenv.cfg").exists():
         venv = ROOT / ".venv"
+        candidate = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if venv.exists() and not compatible_python(candidate):
+            # Preserve an unusable old environment; dependencies are replaceable,
+            # applicant data and encryption keys are never reset for setup repair.
+            venv = CONTROL / ("python-" + secrets.token_hex(4))
         print("Preparing Blink's private Python environment…", flush=True)
         subprocess.run([python, "-m", "venv", str(venv)], cwd=ROOT, check=True)
         python = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
@@ -143,29 +149,45 @@ def install(cfg, env):
     state = read_json(CONTROL / "setup.json")
     lock = ROOT / "backend/requirements.lock.txt"
     stamp = hashlib.sha256(lock.read_bytes()).hexdigest() + cfg["python"]
-    if state.get("python") != stamp:
-        # Existing configured environments may already have exactly the locked packages.
-        probe = 'import importlib.metadata as m; from pathlib import Path; exec(\'for line in Path("backend/requirements.lock.txt").read_text().splitlines():\\n if line and not line.startswith("uvloop"):\\n  name,version=line.split(";")[0].strip().split("=="); assert m.version(name)==version\')'
-        try:
-            output([cfg["python"], "-c", probe], env, timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            print("First-time setup: downloading Blink's Python components…", flush=True)
-            subprocess.run(
-                [cfg["python"], "-m", "pip", "install", "-r", str(lock)], cwd=ROOT, env=env, check=True
-            )
-        state["python"] = stamp
+    # Verify installed files instead of trusting an old installation stamp.
+    # Existing configured environments may already have exactly the locked packages.
+    probe = 'import importlib.metadata as m; from pathlib import Path; exec(\'for line in Path("backend/requirements.lock.txt").read_text().splitlines():\\n if line and not line.startswith("uvloop"):\\n  name,version=line.split(";")[0].strip().split("=="); assert m.version(name)==version\')'
+    probe += "; import fastapi, sqlalchemy, playwright.async_api, openai, cryptography.fernet"
+    try:
+        output([cfg["python"], "-c", probe], env, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        print("First-time setup: downloading Blink's Python components…", flush=True)
+        subprocess.run(
+            [cfg["python"], "-m", "pip", "install", "--force-reinstall", "-r", str(lock)],
+            cwd=ROOT,
+            env=env,
+            check=True,
+        )
+    state["python"] = stamp
     pkg = ROOT / "frontend/package.json"
     front_stamp = digest([pkg, ROOT / "frontend/pnpm-lock.yaml"])
-    if state.get("frontend") != front_stamp:
-        probe = "const fs=require('fs');const p=require('./frontend/package.json');for(const [n,v] of Object.entries({...p.dependencies,...p.devDependencies}))if(JSON.parse(fs.readFileSync('./frontend/node_modules/'+n+'/package.json')).version!==v)process.exit(1)"
-        try:
-            output([cfg["node"], "-e", probe], env)
-        except (OSError, subprocess.SubprocessError):
-            print("First-time setup: downloading the website components…", flush=True)
+    # Temporary or partially removed node_modules must be repaired too.
+    probe = "const fs=require('fs');const p=require('./frontend/package.json');for(const [n,v] of Object.entries({...p.dependencies,...p.devDependencies}))if(JSON.parse(fs.readFileSync('./frontend/node_modules/'+n+'/package.json')).version!==v)process.exit(1)"
+    probe += ";for(const p of ['typescript/bin/tsc','vite/bin/vite.js'])if(!fs.existsSync('./frontend/node_modules/'+p))process.exit(1)"
+    probe += ";Promise.all([import('./frontend/node_modules/vite/dist/node/index.js'),import('./frontend/node_modules/@tailwindcss/vite/dist/index.mjs')]).catch(()=>process.exit(1))"
+    try:
+        output([cfg["node"], "-e", probe], env)
+    except (OSError, subprocess.SubprocessError):
+        print("Installing or repairing the website components…", flush=True)
+        modules = ROOT / "frontend/node_modules"
+        if modules.is_symlink():
+            modules.unlink()  # Remove only the link; keep its previous target untouched.
+        # An unreadable package store must not seed the same broken files again.
+        # Installed files remain in node_modules after this disposable cache closes.
+        with tempfile.TemporaryDirectory(prefix="blink-packages-") as store:
             subprocess.run(
-                cfg["manager"] + ["install", "--frozen-lockfile"], cwd=ROOT / "frontend", env=env, check=True
+                cfg["manager"] + ["install", "--frozen-lockfile", "--force", "--store-dir", store],
+                cwd=ROOT / "frontend",
+                env=env,
+                check=True,
+                timeout=300,
             )
-        state["frontend"] = front_stamp
+    state["frontend"] = front_stamp
     sources = list((ROOT / "frontend/src").rglob("*"))
     source_stamp = digest(
         [p for p in sources if p.is_file()]
@@ -178,15 +200,23 @@ def install(cfg, env):
             cwd=ROOT / "frontend",
             env=env,
             check=True,
+            timeout=180,
         )
         subprocess.run(
             [cfg["node"], str(ROOT / "frontend/node_modules/vite/bin/vite.js"), "build"],
             cwd=ROOT / "frontend",
             env=env,
             check=True,
+            timeout=180,
         )
         state["build"] = source_stamp
-    if state.get("browser") != stamp:
+    browser_ready = True
+    try:
+        probe = "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+        output([cfg["python"], "-c", probe], env, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        browser_ready = False
+    if not browser_ready or state.get("browser") != stamp:
         print("Checking the application browser…", flush=True)
         subprocess.run(
             [cfg["python"], "-m", "playwright", "install", "chromium"], cwd=ROOT, env=env, check=True
@@ -390,6 +420,13 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except subprocess.TimeoutExpired:
+        print(
+            "\nSetup took too long. Check your connection and available disk space. If this folder is in iCloud Drive, choose Keep Downloaded in Finder, then launch again.",
+            file=sys.stderr,
+        )
+        print("Your saved information has not been deleted.", file=sys.stderr)
+        sys.exit(1)
     except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
         print("\nBlink couldn't open: " + str(exc), file=sys.stderr)
         print("Your saved information has not been deleted. See README.md for help.", file=sys.stderr)

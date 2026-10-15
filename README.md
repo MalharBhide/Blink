@@ -12,7 +12,7 @@ Blink runs **on your own computer**. There is no account to create and no shared
 
 ### First time
 
-1. **Download Blink.** On [the repository page](https://github.com/MalharBhide/Blink), click **Code → Download ZIP**, then unzip it. Keep the folder somewhere private on your computer. If you already have the project folder, use that.
+1. **Download Blink.** On [the repository page](https://github.com/MalharBhide/Blink), click **Code → Download ZIP**, then unzip it. Keep the folder somewhere private on your computer, preferably outside iCloud Drive or other synced folders. If you already have the project folder, use that. On macOS, choose **Keep Downloaded** in Finder if the folder is in iCloud Drive.
 2. **Install its two prerequisites** if you don't already have them: [Python](https://www.python.org/downloads/) **3.12 or newer**, and [Node.js](https://nodejs.org/en/download) **22.12 or newer**. Choose the Node.js LTS installer. On Windows, check **Add Python to PATH** in the Python installer. Close and reopen any old terminal windows afterward.
 3. **Open the Blink folder** and start the launcher for your computer:
 
@@ -47,13 +47,15 @@ On Windows, use `py -3 scripts\launch.py` instead. The launcher explains missing
 
 ## Your first application
 
-1. Choose **Add your details**. Start with your name, contact information, and education. Everything is optional; click **Save profile** when you're done.
-2. Choose **Upload your resume** and select a PDF or Word (`.docx`) file. You can keep several resumes and choose one for each application.
+1. Choose **Add your details**. Start with your name, contact information, and education. Everything is optional. Your changes save automatically; look for **All changes saved securely on this device**. You can also click **Save profile**.
+2. Choose **Upload your resume** and select a PDF or Word (`.docx`) file. The first resume becomes your default. You can keep several resumes, choose one for each application, and download your saved documents.
 3. On **Overview**, paste a direct internship job link. To learn how Blink works first, choose **Try the local test portal**. Use synthetic information for practice; do not submit real employer forms just to test the app.
 4. Watch **Agent workspace**. Blink fills information it knows and asks you for unfamiliar answers in chat. Only choose **Remember this answer** when you want it reused.
 5. If the employer opens a different application page, Blink asks you to **confirm that exact destination** before continuing. Confirm only links belonging to this internship. This permission stays with that application.
-6. **Review everything**, including where the form will send your information, edit any answers you want to change, then choose **Approve & submit**. Blink records a successful application only after it finds confirmation.
+6. **Review everything**, including where the form will send your information, edit any answers you want to change, wait for the updated review, then choose **Approve & submit**. Blink records a successful application only after it finds confirmation.
 7. Check **Application history** to see progress or resume an interrupted application.
+
+If the connection drops, Blink keeps your unsaved profile draft in the current tab and tries to reconnect. Keep that tab open until your changes are saved.
 
 **Pause** puts an application on hold. **Stop** halts the agent and closes its application browser. **Lock workspace** hides your profile and locks this browser; it does not cancel an application already running.
 
@@ -68,6 +70,8 @@ Workday links using either `/job/` or `/details/` are recognized. Its Apply butt
 These adapters **do not yet complete account sign-in, Oracle email verification, or employer-specific draft/save APIs**. Opening an application screen is not a completed application. Those flows may still be blocked even if you interact manually. Blink explains the unsupported step and does not collect passwords or bypass CAPTCHA.
 
 If an older attempt was incorrectly rejected, open it in **Application history → Agent workspace → Check link again**. This rechecks the original job with fresh permissions and preserves the prior attempt's answers in encrypted history. Paused attempts use **Continue**. Submitted or uncertain submissions cannot be retried.
+
+When a portal needs manual completion, the workspace offers its link, your saved documents, and copy buttons for reviewed answers. Opening that link uses your own browser and leaves the restricted agent paused.
 
 Some portals require custom APIs, third-party scripts, embedded forms, accounts, or CAPTCHA. Those can still pause. Blink keeps its browser restrictions active and tells you when it cannot continue safely. It cannot guarantee automatic completion on every employer's website.
 
@@ -98,6 +102,7 @@ Written drafts need your review. Blink does not invent experience, grades, work 
 | “This site can't be reached”                          | Open **Launch Blink** and wait for it to say it's ready. A bookmarked link cannot start the app by itself. |
 | “Your workspace is locked” or an expired opening link | Open **Launch Blink** again. It creates a fresh private opening link.                                      |
 | Python or Node.js is missing                          | Install the two prerequisites above, then reopen the launcher.                                             |
+| Setup stalls or files time out                       | Check free disk space. For an iCloud folder, choose **Keep Downloaded**, wait for downloads, then relaunch. Blink checks and repairs missing components. |
 | Setup cannot download a component                     | Check your internet connection, then launch again. Your saved data is not erased.                          |
 | A local port is already in use                        | Close an earlier Blink development server. The launcher will not take over another program's port.         |
 | Employer form pauses                                  | Read the explanation in chat. Login and CAPTCHA need your help; some workflows aren't supported yet.       |

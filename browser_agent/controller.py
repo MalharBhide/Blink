@@ -178,9 +178,23 @@ class BrowserController:
                 self.pending_navigation = self.page.url
             raise
 
-    async def inspect(self):
+    async def inspect(self, page_index=0):
         self.policy.interaction(self.page.url)
-        return await parse_form(self.page)
+        fields = await parse_form(self.page)
+        for field in fields:
+            field.page = page_index
+        return fields
+
+    async def invalid_fields(self, fields):
+        self.policy.interaction(self.page.url)
+        invalid = []
+        for field in fields:
+            el = self.locator(field)
+            if await el.count() and await el.first.evaluate(
+                "el => Boolean(el.willValidate && !el.validity.valid)"
+            ):
+                invalid.append(field)
+        return invalid
 
     async def snapshot(self):
         if self.page and not self.page.is_closed():
@@ -201,25 +215,45 @@ class BrowserController:
         el = self.locator(field)
         value = str(answer)
         if field.kind == "radio":
-            match = self.page.get_by_label(value, exact=True)
-            if await match.count() == 1:
-                await match.check()
-            else:
-                for i in range(await el.count()):
-                    if (await el.nth(i).get_attribute("value") or "").casefold() == value.casefold():
-                        await el.nth(i).check()
-                        return
-                raise ValueError("Radio option not found; choose an available option.")
+            matches = []
+            for i in range(await el.count()):
+                candidate = el.nth(i)
+                labels = await candidate.evaluate(
+                    "el => [...(el.labels || [])].map(x => x.textContent.trim())"
+                )
+                values = [await candidate.get_attribute("value"), *labels]
+                if value.strip().casefold() in {str(x).strip().casefold() for x in values if x is not None}:
+                    matches.append(candidate)
+            if len(matches) != 1:
+                raise ValueError("Choose one available radio option.")
+            await matches[0].check()
         elif field.kind == "checkbox":
             if value.casefold() not in ("yes", "no", "true", "false"):
                 raise ValueError("Checkbox answer must be Yes or No.")
             await el.set_checked(value.casefold() in ("yes", "true"))
         elif field.kind.startswith("select"):
             labels = [x.strip() for x in value.split(";")] if field.kind == "select-multiple" else value
-            await el.select_option(label=labels)
+            choices = labels if isinstance(labels, list) else [labels]
+            normalized = []
+            for choice in choices:
+                matches = [
+                    option
+                    for option in field.options
+                    if option.strip().casefold() == choice.strip().casefold()
+                ]
+                if len(matches) != 1:
+                    raise ValueError("Choose an available dropdown option.")
+                normalized.append(matches[0])
+            await el.select_option(label=normalized)
         elif field.kind == "combobox":
-            await el.fill(value)
-            option = self.page.get_by_role("option", name=value, exact=True)
+            if await el.evaluate("el => el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'"):
+                await el.fill(value)
+            else:
+                await el.click()
+            self.policy.interaction(self.page.url)
+            option = self.page.get_by_role("option", name=value, exact=True).filter(visible=True)
+            if await option.count() != 1:
+                raise ValueError("Choose an available dropdown option.")
             await option.click()
         elif field.kind == "file":
             raise PolicyError("File fields require a registered document ID.")

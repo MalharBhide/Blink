@@ -14,6 +14,7 @@ from backend.app.tracker import get_application, update, log, save_answer
 from database.session import session
 from database.models import Application
 from sqlalchemy import select
+from playwright.async_api import Error as PlaywrightError
 
 TERMINAL = {"submitted", "cancelled", "rejected"}
 TRANSITIONS = {
@@ -46,9 +47,35 @@ class AgentOrchestrator:
         self.prior_state = None
         self.approval = asyncio.Event()
         self.pending = None
+        self.review_refresh = False
+
+    def ensure_slot(self):
+        with session() as db:
+            other = db.scalar(
+                select(Application).where(
+                    Application.id != self.app_id,
+                    Application.status.not_in(
+                        ["submitted", "cancelled", "rejected", "paused", "submission_unknown"]
+                    ),
+                )
+            )
+            if other:
+                raise ValueError("Pause or stop your current application before continuing another one.")
 
     def state(self, status, **data):
         current = get_application(self.app_id).status
+        if (
+            current == "paused"
+            and not self.gate.is_set()
+            and self.task
+            and asyncio.current_task() is self.task
+            and status
+            not in ("paused", "cancelled", "rejected", "submitted", "submission_unknown", "submitting")
+        ):
+            # An in-flight operation may finish after Pause. Keep the UI paused
+            # and remember where Continue should resume, rather than hiding it.
+            self.prior_state = status
+            return update(self.app_id, **data)
         if status != current and status not in TRANSITIONS.get(current, set()):
             raise ValueError(f"Cannot transition from {current} to {status}.")
         return update(self.app_id, status, **data)
@@ -74,6 +101,17 @@ class AgentOrchestrator:
         return answer
 
     async def start(self):
+        if self.task and not self.task.done():
+            raise ValueError("This application is already running.")
+        self.ensure_slot()
+        # Reserve the single active slot before yielding to browser startup.
+        self.state("verifying")
+        self.reply = asyncio.Queue(maxsize=1)
+        self.pending = None
+        self.prior_state = None
+        self.review_refresh = False
+        self.approval.clear()
+        self.gate.set()
         self.task = asyncio.create_task(self.run())
 
     async def confirm_destination(self, policy, url, reason, *, submission=False):
@@ -127,6 +165,7 @@ class AgentOrchestrator:
         app = get_application(self.app_id)
         phase = "preparing the application"
         try:
+            await self.checkpoint()
             self.state("verifying", error=None, pending=None, step=0)
             policy = await asyncio.wait_for(
                 asyncio.to_thread(WorkflowPolicy, app.data["url"], cfg.enable_mock_portal), timeout=15
@@ -237,9 +276,10 @@ class AgentOrchestrator:
                         "mock" if policy.platform == "mock" else platform_for(self.controller.page.url)
                     ]()
             await adapter.wait_ready(self.controller.page)
-            for step in range(30):
+            page_index = 0
+            for _ in range(60):
                 await self.checkpoint()
-                update(self.app_id, step=step)
+                update(self.app_id, step=page_index)
                 choice = await adapter.application_choice(self.controller.page)
                 if choice:
                     try:
@@ -256,12 +296,12 @@ class AgentOrchestrator:
                     await self.controller.page.wait_for_timeout(500)
                 if await adapter.manual_challenge(self.controller.page):
                     await self.controller.snapshot()
+                    self.gate.clear()
                     self.state("manual", pending=None)
                     log(
                         self.app_id,
                         adapter.manual_message,
                     )
-                    self.gate.clear()
                     await self.checkpoint()
                     continue  # Recheck the challenge before parsing or filling login fields.
                 policy.interaction(self.controller.page.url)
@@ -274,7 +314,7 @@ class AgentOrchestrator:
                     )
                     return
                 await adapter.expand_records(self.controller.page, get_profile())
-                fields = await self.controller.inspect()
+                fields = await self.controller.inspect(page_index)
                 for field in fields:
                     await self.checkpoint()
                     resolution = await self.resolver.resolve(field, get_application(self.app_id))
@@ -292,7 +332,7 @@ class AgentOrchestrator:
                             else:
                                 await self.controller.fill(field, resolution.answer)
                             break
-                        except (ValueError, PolicyError):
+                        except (ValueError, PolicyError, PlaywrightError):
                             log(
                                 self.app_id,
                                 "The answer did not match this control. Please choose an available option or document.",
@@ -301,9 +341,39 @@ class AgentOrchestrator:
                     save_answer(self.app_id, field, resolution)
                     await self.controller.snapshot()
                 await self.checkpoint()
+                # Conditional questions may appear after a preceding answer.
+                current_fields = await self.controller.inspect(page_index)
+                completed = {
+                    (x["key"], x.get("group", ""), x.get("index", 0), x.get("page", 0), x["label"])
+                    for x in get_application(self.app_id).data.get("answers", [])
+                }
+                if any(
+                    field.required
+                    and (field.key, field.group, field.index, field.page, field.label) not in completed
+                    for field in current_fields
+                ):
+                    continue
+                invalid = await self.controller.invalid_fields(current_fields)
+                if invalid:
+                    field = invalid[0]
+                    log(
+                        self.app_id,
+                        f"The portal needs a valid answer for “{field.label}”. Please check its format or available options.",
+                    )
+                    resolution = await self.ask(field)
+                    try:
+                        if field.kind == "file":
+                            await self.controller.upload(field, resolution.document_id)
+                        else:
+                            await self.controller.fill(field, resolution.answer)
+                        save_answer(self.app_id, field, resolution)
+                    except (ValueError, PolicyError, PlaywrightError):
+                        pass  # Ask again on the next pass; never advance an invalid form.
+                    continue
                 next_button = await adapter.next_button(self.controller.page)
                 if next_button:
                     before = await self.controller.page.locator("body").inner_text()
+                    before_url = self.controller.page.url
                     self.controller.pending_navigation = None
                     try:
                         await self.controller.click_next(next_button)
@@ -321,13 +391,15 @@ class AgentOrchestrator:
                         ]()
                     await self.controller.page.wait_for_timeout(350)
                     after = await self.controller.page.locator("body").inner_text()
-                    if after == before:
+                    if after != before or self.controller.page.url != before_url:
+                        page_index += 1
+                    else:
+                        self.gate.clear()
                         self.state("manual")
                         log(
                             self.app_id,
                             "The form did not advance. Please resolve its validation in the browser or edit answers, then Continue.",
                         )
-                        self.gate.clear()
                         await self.checkpoint()
                     await self.controller.snapshot()
                     continue
@@ -366,6 +438,10 @@ class AgentOrchestrator:
                     await self.controller.snapshot()
                     await self.approval.wait()
                     await self.checkpoint()
+                    if self.review_refresh:
+                        self.review_refresh = False
+                        self.approval.clear()
+                        continue
                     # Approval endpoint transitions under lock; network permit expires after the attempt.
                     await self.controller.validate_submission_form(submit, form_target)
                     policy.submission_permit = True
@@ -409,12 +485,12 @@ class AgentOrchestrator:
                     await self.controller.snapshot()
                     return
                 await self.controller.snapshot()
+                self.gate.clear()
                 self.state("manual")
                 log(
                     self.app_id,
                     adapter.unsupported_message,
                 )
-                self.gate.clear()
                 await self.checkpoint()
             self.state("paused", error="Step limit reached. Review this application manually.")
         except asyncio.CancelledError:
@@ -450,7 +526,9 @@ class AgentOrchestrator:
             app = get_application(self.app_id)
             state = self.prior_state if app.status == "paused" else app.status
             if (
-                state not in ("waiting_answer", "waiting_verification", "waiting_workflow")
+                not self.task
+                or self.task.done()
+                or state not in ("waiting_answer", "waiting_verification", "waiting_workflow")
                 or self.reply.full()
             ):
                 raise ValueError("There is no active question awaiting an answer.")
@@ -462,8 +540,15 @@ class AgentOrchestrator:
                 if text.casefold() not in ("yes", "no"):
                     raise ValueError("Choose Yes or No to confirm this role or destination.")
             elif self.pending:
-                if self.pending.options and text not in self.pending.options:
-                    raise ValueError("Choose one of the available options.")
+                if self.pending.kind == "file" and not document_id:
+                    raise ValueError("Choose an uploaded document for this question.")
+                choices = (
+                    [value.strip() for value in text.split(";")]
+                    if self.pending.kind == "select-multiple"
+                    else [text]
+                )
+                if self.pending.options and any(value not in self.pending.options for value in choices):
+                    raise ValueError("Choose from the available options.")
                 if save and APPLICATION_ONLY.search(self.pending.label):
                     log(
                         self.app_id,
@@ -506,6 +591,7 @@ class AgentOrchestrator:
     async def resume(self):
         async with self.lock:
             app = get_application(self.app_id)
+            self.ensure_slot()
             if app.status == "paused" and self.prior_state and self.task and not self.task.done():
                 self.state(self.prior_state)
                 self.gate.set()
@@ -513,6 +599,7 @@ class AgentOrchestrator:
                 self.state("filling")
                 self.gate.set()
             elif app.status == "paused" and (not self.task or self.task.done()):
+                self.state("verifying")
                 if self.controller:
                     await self.controller.close()
                 self.prior_state = None
@@ -587,6 +674,12 @@ class AgentOrchestrator:
             self.approval.set()
 
     async def stop(self):
+        # Stop new network actions immediately, even if an edit owns the lock.
+        if get_application(self.app_id).status != "submitted":
+            if self.controller:
+                self.controller.policy.stopped = True
+            if self.task and not self.task.done():
+                self.task.cancel()
         async with self.lock:
             app = get_application(self.app_id)
             if app.status == "submitted":

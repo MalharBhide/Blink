@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import re
 from sqlalchemy import select
 from backend.app.memory import get_profile, fingerprint, normalize, SENSITIVE, CONTEXTUAL, APPLICATION_ONLY
 from database.models import SavedAnswer
@@ -48,6 +49,10 @@ class Resolution:
 
 def profile_value(field, profile):
     label = normalize(field.label)
+    if label in ("name", "full name", "legal name", "legal full name") and field.group in ("", "personal"):
+        personal = profile["personal"]
+        first, last = personal.get("first_name", "").strip(), personal.get("last_name", "").strip()
+        return f"{first} {last}" if first and last else None
     key = next((k for k, aliases in ALIASES.items() if label in aliases), None)
     if not key:
         return None
@@ -90,6 +95,8 @@ class AnswerResolver:
                 item["key"] == field.key
                 and item.get("group", "") == field.group
                 and item.get("index", 0) == field.index
+                and item.get("page", 0) == field.page
+                and ("label" not in item or normalize(item["label"]) == normalize(field.label))
             ):
                 return Resolution(
                     item["answer"],
@@ -101,7 +108,11 @@ class AnswerResolver:
         if field.group == "unclassified_repeat":
             return None
         if field.kind == "file":
-            kind = "resume" if "resume" in field.label.casefold() or "cv" in field.label.casefold() else None
+            kind = (
+                "resume"
+                if re.search(r"\b(?:resume|résumé|cv|curriculum vitae)\b", field.label, re.I)
+                else None
+            )
             document = data.get("resume_id") if kind == "resume" else data.get("documents", {}).get(field.key)
             if document:
                 return Resolution(
@@ -132,6 +143,25 @@ class AnswerResolver:
                 "Do you need employment visa sponsorship in the United States now or in the future?"
             ): "sponsorship_us",
         }
+        general_preferences = {
+            "Are you at least 18 years old?": "adult",
+            "Are you available full-time?": "full_time",
+            "Are you interested in remote positions?": "remote",
+            "Are you willing to work in person?": "in_person",
+            "Are you willing to work in a hybrid environment?": "hybrid",
+            "How many hours per week can you work?": "hours",
+        }
+        preference = {normalize(question): key for question, key in general_preferences.items()}.get(label)
+        if (
+            preference
+            and prefs.get(preference)
+            and (preference == "hours" or prefs[preference] in ("Yes", "No"))
+        ):
+            return Resolution(
+                str(prefs[preference]),
+                "profile",
+                "Your explicitly saved preference for the same general question.",
+            )
         key = eligibility.get(label)
         if key and prefs.get(key) in ("Yes", "No"):
             return Resolution(

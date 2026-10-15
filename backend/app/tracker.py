@@ -1,6 +1,7 @@
 from sqlalchemy import select
+import re
 from database.session import session
-from database.models import Application, ApplicationAnswer, ExecutionLog
+from database.models import Application, ApplicationAnswer, ExecutionLog, Document
 
 
 def application_view(app):
@@ -60,16 +61,29 @@ def save_answer(app_id, field, resolution):
             "explanation": resolution.explanation,
             "document_id": resolution.document_id,
             "reviewed": resolution.reviewed,
-            "page": app.data.get("step", 0),
+            "page": field.page,
         }
         existing = [
             x
             for x in app.data.get("answers", [])
             if not (
-                x["key"] == field.key and x.get("group") == field.group and x.get("index", 0) == field.index
+                x["key"] == field.key
+                and x.get("group", "") == field.group
+                and x.get("index", 0) == field.index
+                and x.get("page", 0) == field.page
+                and x.get("label") == field.label
             )
         ]
-        app.data = {**app.data, "answers": [*existing, answer]}
+        data = {**app.data, "answers": [*existing, answer]}
+        if (
+            field.kind == "file"
+            and resolution.document_id
+            and re.search(r"\b(?:resume|résumé|cv|curriculum vitae)\b", field.label, re.I)
+        ):
+            doc = db.get(Document, resolution.document_id)
+            if doc and doc.data["kind"] == "resume":
+                data["resume_id"] = doc.id
+        app.data = data
         app.revision += 1
         db.add(ApplicationAnswer(application_id=app_id, data=answer))
         db.commit()

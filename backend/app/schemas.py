@@ -39,6 +39,7 @@ class EditInput(BaseModel):
     answer: str = Field(max_length=10000)
     group: str = ""
     index: int = 0
+    page: int | None = Field(default=None, ge=0)
     document_id: str | None = None
 
 

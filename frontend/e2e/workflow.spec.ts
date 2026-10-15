@@ -219,3 +219,195 @@ test("offline screen gives a useful launch instruction and retry", async ({
   await page.getByRole("button", { name: "Check connection again" }).click();
   await expect(page.getByText("Local workspace connected")).toBeVisible();
 });
+
+test("profile saves without a manual save and duplicate links open the existing application", async ({
+  page,
+}) => {
+  const name = `Autosaved-${Date.now()}`;
+  await page
+    .getByRole("button", { name: "Applicant profile", exact: true })
+    .click();
+  await page.getByLabel("Legal first name", { exact: true }).fill(name);
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  const url = `http://127.0.0.1:8001/mock/jobs/autosave-${Date.now()}`;
+  await page.getByLabel("Where are we applying?", { exact: true }).fill(url);
+  await page
+    .getByRole("button", { name: "Start application", exact: true })
+    .click();
+  await expect(page.getByText(name, { exact: true }).last()).toBeVisible({
+    timeout: 30000,
+  });
+  await expect(
+    page.getByRole("button", { name: "Approve & submit", exact: true }),
+  ).toBeVisible({ timeout: 30000 });
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await page.getByLabel("Where are we applying?", { exact: true }).fill(url);
+  await page
+    .getByRole("button", { name: "Start application", exact: true })
+    .click();
+  await expect(
+    page.getByText(/This position is already in your history/),
+  ).toBeVisible();
+  await expect(page.getByText("Ready for your final review")).toBeVisible();
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Applicant profile", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Legal first name", { exact: true }),
+  ).toHaveValue(name);
+});
+
+test("a failed autosave retains the draft and reconnect saves it", async ({
+  page,
+}) => {
+  await page
+    .getByRole("button", { name: "Applicant profile", exact: true })
+    .click();
+  await page.route("**/api/profile", (route) =>
+    route.request().method() === "PUT" ? route.abort() : route.continue(),
+  );
+  await page
+    .getByLabel("Legal first name", { exact: true })
+    .fill("Recovered draft");
+  await expect(
+    page.getByText(/Your changes are still in this tab/),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Legal first name", { exact: true }),
+  ).toHaveValue("Recovered draft");
+  await page.unroute("**/api/profile");
+  await expect(
+    page.getByText("All changes saved securely on this device."),
+  ).toBeVisible({ timeout: 15000 });
+  await page.reload();
+  await page
+    .getByRole("button", { name: "Applicant profile", exact: true })
+    .click();
+  await expect(
+    page.getByLabel("Legal first name", { exact: true }),
+  ).toHaveValue("Recovered draft");
+});
+
+test("a rejected API session restores safely and stays connected", async ({
+  page,
+}) => {
+  let rejected = false;
+  let restored = false;
+  await page.route("**/api/session", (route) => {
+    restored = true;
+    return route.continue();
+  });
+  await page.route("**/api/applications", (route) => {
+    if (!rejected) {
+      rejected = true;
+      return route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: '{"detail":"Local session required."}',
+      });
+    }
+    return route.continue();
+  });
+  await expect.poll(() => restored, { timeout: 10000 }).toBe(true);
+  await expect(page.getByText("Local workspace connected")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("Local workspace connected")).toBeVisible();
+});
+
+test("locking while the backend is unavailable still hides and locks the workspace", async ({
+  page,
+}) => {
+  await page.route("**/api/session", (route) =>
+    route.request().method() === "DELETE" ? route.abort() : route.continue(),
+  );
+  await page.getByRole("button", { name: "Lock workspace" }).click();
+  await expect(
+    page.getByText("Your workspace is locked", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Applicant profile", exact: true }),
+  ).toHaveCount(0);
+  await page.reload();
+  await expect(
+    page.getByText("Your workspace is locked", { exact: true }),
+  ).toBeVisible();
+});
+
+test("review edits update the application and require a new approval", async ({
+  page,
+}) => {
+  await page
+    .getByLabel("Where are we applying?", { exact: true })
+    .fill(`http://127.0.0.1:8001/mock/jobs/review-ui-${Date.now()}`);
+  await page
+    .getByRole("button", { name: "Start application", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Approve & submit", exact: true }),
+  ).toBeVisible({ timeout: 30000 });
+  const row = page.locator(".review-answer").filter({
+    hasText: "What would you like to learn during this internship?",
+  });
+  await row.getByRole("button", { name: "Edit", exact: true }).click();
+  await page
+    .getByLabel("What would you like to learn during this internship?", {
+      exact: true,
+    })
+    .fill("A reviewed answer from the user.");
+  await page.getByRole("button", { name: "Save & update application" }).click();
+  await expect(row).toContainText("A reviewed answer from the user.");
+  await expect(
+    page.getByRole("button", { name: "Approve & submit", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Approve & submit", exact: true })
+    .click();
+  await expect(
+    page.getByText(/Application received. Confirmation NS-/).last(),
+  ).toBeVisible({ timeout: 15000 });
+});
+
+test("locking immediately hides data and discards a delayed session restoration", async ({
+  page,
+}) => {
+  let release: (() => void) | undefined;
+  let restoring = false;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let rejected = false;
+  await page.route("**/api/session", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    restoring = true;
+    await hold;
+    await route.fulfill({ response });
+  });
+  await page.route("**/api/applications", (route) => {
+    if (!rejected) {
+      rejected = true;
+      return route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: '{"detail":"Local session required."}',
+      });
+    }
+    return route.continue();
+  });
+  await expect.poll(() => restoring, { timeout: 10000 }).toBe(true);
+  await page.getByRole("button", { name: "Lock workspace" }).click();
+  await expect(
+    page.getByText("Your workspace is locked", { exact: true }),
+  ).toBeVisible({ timeout: 1000 });
+  release!();
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("blink_session")))
+    .toBe(null);
+  await page.unroute("**/api/session");
+  await page.reload();
+  await expect(
+    page.getByText("Your workspace is locked", { exact: true }),
+  ).toBeVisible();
+});

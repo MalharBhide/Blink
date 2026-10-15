@@ -1,0 +1,62 @@
+"""Launch repairs replaceable dependencies without resetting private applicant data."""
+
+import hashlib
+import json
+import subprocess
+from scripts import launch
+
+
+def test_matching_setup_stamp_still_repairs_missing_components(tmp_path, monkeypatch):
+    root = tmp_path
+    control = root / ".data/launcher"
+    control.mkdir(parents=True)
+    (root / "backend").mkdir()
+    (root / "backend/requirements.lock.txt").write_text("fastapi==0.142.4\n")
+    front = root / "frontend"
+    front.mkdir()
+    (front / "src").mkdir()
+    (front / "package.json").write_text("{}")
+    (front / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n")
+    (front / "index.html").write_text("<html></html>")
+    (front / "vite.config.ts").write_text("export default {}")
+    (front / "dist").mkdir()
+    (front / "dist/index.html").write_text("<html></html>")
+    (root / ".env").write_text("OPENAI_API_KEY=\n")
+    target = root / "old-components"
+    target.mkdir()
+    (target / "preserved").write_text("keep")
+    (front / "node_modules").symlink_to(target, target_is_directory=True)
+    private = root / ".data/private-sentinel"
+    private.write_bytes(b"encrypted-test-sentinel")
+    monkeypatch.setattr(launch, "ROOT", root)
+    monkeypatch.setattr(launch, "CONTROL", control)
+    cfg = {"python": "test-python", "node": "test-node", "manager": ["test-pnpm"]}
+    stamp = hashlib.sha256((root / "backend/requirements.lock.txt").read_bytes()).hexdigest() + cfg["python"]
+    paths = [front / "package.json", front / "index.html", front / "vite.config.ts"]
+    state = {
+        "python": stamp,
+        "browser": stamp,
+        "frontend": launch.digest([front / "package.json", front / "pnpm-lock.yaml"]),
+        "build": launch.digest(paths),
+    }
+    (control / "setup.json").write_text(json.dumps(state))
+    calls = []
+
+    def output(command, env=None, timeout=30):
+        if "from backend.app.config" in command[-1]:
+            return json.dumps({"data_dir": str(root / ".data"), "mock": True})
+        raise subprocess.CalledProcessError(1, command)
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(launch, "output", output)
+    monkeypatch.setattr(launch.subprocess, "run", run)
+    launch.install(cfg, {})
+    assert any("pip" in command and "--force-reinstall" in command for command in calls)
+    assert any(command[0] == "test-pnpm" and "--force" in command for command in calls)
+    assert any("playwright" in command and "chromium" in command for command in calls)
+    assert not (front / "node_modules").is_symlink()
+    assert (target / "preserved").read_text() == "keep"
+    assert private.read_bytes() == b"encrypted-test-sentinel"

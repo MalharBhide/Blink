@@ -17,7 +17,7 @@ def list_documents():
 
 
 def create_document(name, content, kind, default=False):
-    name = Path(name.replace("\\", "/")).name
+    name = "".join(c for c in Path(name.replace("\\", "/")).name if ord(c) >= 32 and ord(c) != 127)
     extension = Path(name).suffix.lower()
     if kind not in KINDS or extension not in (".pdf", ".docx") or len(content) > MAX_SIZE or not content:
         raise ValueError("Use a PDF or DOCX up to 15 MB and a supported document type.")
@@ -49,6 +49,8 @@ def create_document(name, content, kind, default=False):
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }
     with session() as db:
+        if kind == "resume" and not any(old.data["kind"] == "resume" for old in db.scalars(select(Document))):
+            metadata["default"] = True
         if metadata["default"]:
             for old in db.scalars(select(Document)):
                 old.data = {**old.data, "default": False}
@@ -64,7 +66,12 @@ def document_payload(doc_id):
         doc = db.get(Document, doc_id)
         if not doc:
             raise ValueError("Selected document no longer exists.")
-        content = cipher().decrypt((settings().data_dir / "documents" / doc.id).read_bytes())
+        try:
+            content = cipher().decrypt((settings().data_dir / "documents" / doc.id).read_bytes())
+        except OSError:
+            raise ValueError(
+                "This document is unavailable. Upload it again or choose another document."
+            ) from None
         return {"name": doc.data["name"], "mimeType": doc.data["mime"], "buffer": content}
 
 

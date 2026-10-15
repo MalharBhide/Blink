@@ -44,7 +44,8 @@ def portal():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    for _ in range(60):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("Mock portal could not start; port 8001 may already be in use.")
         try:
@@ -54,6 +55,7 @@ def portal():
             time.sleep(0.1)
     else:
         process.terminate()
+        process.wait(timeout=10)
         raise RuntimeError("Mock portal startup timed out.")
     yield
     process.terminate()

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import {
   ArrowUpRight,
+  Download,
   ArrowRight,
   BriefcaseBusiness,
   Check,
   ChevronRight,
   CircleHelp,
   Command,
+  Copy,
   FileText,
   Globe2,
   History,
@@ -29,6 +31,8 @@ import {
 } from "lucide-react";
 import {
   api,
+  ApiError,
+  downloadDocument,
   BASE,
   connect,
   initialConnect,
@@ -63,6 +67,7 @@ type Answer = {
   explanation: string;
   group: string;
   index: number;
+  page?: number;
   kind: string;
   options: string[];
   document_id?: string;
@@ -77,7 +82,7 @@ type Application = {
   resume_id?: string;
   job?: { title: string; company: string; location: string };
   answers: Answer[];
-  pending?: { label: string; kind: string; options?: string[] };
+  pending?: { key?: string; label: string; kind: string; options?: string[] };
   suggestion?: string;
   error?: string;
   warnings?: string[];
@@ -240,6 +245,42 @@ export default function App() {
     [query, setQuery] = useState(""),
     [image, setImage] = useState<string | null>(null);
   const chatScroll = useRef<HTMLDivElement>(null);
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const savedProfile = useRef("");
+  const profileEpoch = useRef(0);
+  const savingProfile = useRef<Promise<void> | null>(null);
+  const [profileSaveState, setProfileSaveState] = useState("saved");
+  const [networkOffline, setNetworkOffline] = useState(false);
+  const persistProfile = useCallback(async () => {
+    while (savingProfile.current) await savingProfile.current;
+    const epoch = profileEpoch.current;
+    const snapshot = profileRef.current;
+    const serialized = JSON.stringify(snapshot);
+    if (serialized === savedProfile.current) return;
+    setProfileSaveState("saving");
+    const saving = (async () => {
+      try {
+        await api("/profile", "PUT", snapshot);
+        if (epoch !== profileEpoch.current) return;
+        savedProfile.current = serialized;
+        setProfileSaveState(
+          JSON.stringify(profileRef.current) === serialized
+            ? "saved"
+            : "pending",
+        );
+      } catch (error) {
+        if (epoch === profileEpoch.current) setProfileSaveState("error");
+        throw error;
+      }
+    })();
+    savingProfile.current = saving;
+    try {
+      await saving;
+    } finally {
+      if (savingProfile.current === saving) savingProfile.current = null;
+    }
+  }, []);
   const [accessCode, setAccessCode] = useState("");
   const [connectionState, setConnectionState] = useState<
     "checking" | "locked" | "offline"
@@ -263,13 +304,23 @@ export default function App() {
     [memAnswer, setMemAnswer] = useState(""),
     [memConsent, setMemConsent] = useState(false);
   const refresh = useCallback(async () => {
+    const epoch = profileEpoch.current;
     const [p, d, a, m] = await Promise.all([
       api("/profile"),
       api("/documents"),
       api("/applications"),
       api("/memory"),
     ]);
-    setProfile(p);
+    if (epoch !== profileEpoch.current) return;
+    if (
+      !savedProfile.current ||
+      JSON.stringify(profileRef.current) === savedProfile.current
+    ) {
+      savedProfile.current = JSON.stringify(p);
+      profileRef.current = p;
+      setProfile(p);
+      setProfileSaveState("saved");
+    }
     setDocs(d);
     setApps(a);
     setMemory(m);
@@ -322,6 +373,38 @@ export default function App() {
     };
   }, [refresh]);
   useEffect(() => {
+    const status = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (detail.kind === "locked") {
+        setConnected(false);
+        setConnectionState("locked");
+        setError(detail.message);
+      } else setNetworkOffline(detail.kind === "offline");
+    };
+    window.addEventListener("blink:connection", status);
+    return () => window.removeEventListener("blink:connection", status);
+  }, []);
+  useEffect(() => {
+    if (!connected || JSON.stringify(profile) === savedProfile.current) return;
+    setProfileSaveState("pending");
+    const timer = setTimeout(() => {
+      persistProfile().catch(() => {});
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [profile, connected, persistProfile]);
+  useEffect(() => {
+    const protectDraft = (event: BeforeUnloadEvent) => {
+      if (
+        connected &&
+        JSON.stringify(profileRef.current) !== savedProfile.current
+      ) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", protectDraft);
+    return () => window.removeEventListener("beforeunload", protectDraft);
+  }, [connected]);
+  useEffect(() => {
     if (!connected) return;
     const interval = setInterval(
       () =>
@@ -333,28 +416,79 @@ export default function App() {
     return () => clearInterval(interval);
   }, [connected]);
   useEffect(() => {
+    if (!networkOffline || !connected) return;
+    const timer = setInterval(async () => {
+      try {
+        const cfg = await connect();
+        setConfig(cfg);
+        await persistProfile();
+        await refresh();
+      } catch (error) {
+        if (error instanceof ConnectionError && error.kind === "locked") {
+          setConnected(false);
+          setConnectionState("locked");
+          setError(error.message);
+        }
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [networkOffline, connected, persistProfile, refresh]);
+  useEffect(() => {
     if (!active?.id || !connected) return;
     const id = active.id;
     let disposed = false;
-    const ws = new WebSocket(`${BASE.replace("http", "ws")}/api/ws/${id}`, [
-      "internship",
-      token,
-    ]);
-    ws.onmessage = (e) => {
-      if (!disposed) setActive(JSON.parse(e.data));
+    let ws: WebSocket | null = null;
+    let reconnect: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 500;
+    const openSocket = () => {
+      if (disposed) return;
+      ws = new WebSocket(`${BASE.replace("http", "ws")}/api/ws/${id}`, [
+        "internship",
+        token,
+      ]);
+      ws.onopen = () => {
+        retryDelay = 500;
+      };
+      ws.onmessage = (e) => {
+        if (!disposed) {
+          const next = JSON.parse(e.data);
+          setActive((current) =>
+            current &&
+            current.id === next.id &&
+            (current.revision > next.revision ||
+              (current.revision === next.revision &&
+                (current.messages?.length || 0) > (next.messages?.length || 0)))
+              ? current
+              : next,
+          );
+        }
+      };
+      ws.onclose = () => {
+        if (!disposed) {
+          reconnect = setTimeout(openSocket, retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 8000);
+        }
+      };
     };
+    openSocket();
     const fallback = setInterval(
       () =>
         api(`/applications/${id}`)
           .then((a) => {
-            if (!disposed) setActive(a);
+            if (!disposed)
+              setActive((current) =>
+                current && current.id === a.id && current.revision > a.revision
+                  ? current
+                  : a,
+              );
           })
           .catch(() => {}),
       2000,
     );
     return () => {
       disposed = true;
-      ws.close();
+      ws?.close();
+      if (reconnect) clearTimeout(reconnect);
       clearInterval(fallback);
     };
   }, [active?.id, connected]);
@@ -381,11 +515,26 @@ export default function App() {
     };
   }, [active?.id]);
   useEffect(() => {
+    if (
+      resume &&
+      !docs.some((doc) => doc.id === resume && doc.kind === "resume")
+    )
+      setResume("");
+    if (documentChoice && !docs.some((doc) => doc.id === documentChoice))
+      setDocumentChoice("");
+  }, [docs, resume, documentChoice]);
+  useEffect(() => {
     setRemember(false);
     setSensitive(false);
+    setDocumentChoice("");
     setDraftOrigin(!!active?.suggestion);
     setChat(active?.suggestion || "");
-  }, [active?.pending?.label, active?.suggestion]);
+  }, [
+    active?.id,
+    active?.pending?.key,
+    active?.pending?.label,
+    active?.suggestion,
+  ]);
   useEffect(() => {
     if (chatScroll.current)
       chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
@@ -409,10 +558,27 @@ export default function App() {
   }
   async function start() {
     await run(async () => {
-      const a = await api("/applications", "POST", {
-        url,
-        resume_id: resume || null,
-      });
+      await persistProfile();
+      let a;
+      try {
+        a = await api("/applications", "POST", {
+          url: url.trim(),
+          resume_id: resume || null,
+        });
+      } catch (error) {
+        if (
+          !(error instanceof ApiError) ||
+          error.status !== 409 ||
+          !error.details.application_id
+        )
+          throw error;
+        a = await api(`/applications/${error.details.application_id}`);
+        setNotice(
+          error.details.code === "application_busy"
+            ? "Your current application is open. Pause or stop it before starting another."
+            : "This position is already in your history. We've opened your existing application.",
+        );
+      }
       setActive(a);
       setView("workspace");
       setUrl("");
@@ -431,9 +597,12 @@ export default function App() {
     await run(async () => {
       if (
         active.pending &&
-        ["waiting_answer", "waiting_verification", "waiting_workflow"].includes(
-          active.status,
-        ) &&
+        [
+          "waiting_answer",
+          "waiting_verification",
+          "waiting_workflow",
+          "paused",
+        ].includes(active.status) &&
         !/^(pause(?: the application)?|continue|resume|cancel(?: this application)?|stop|show me what you filled out|why did you choose that answer|don.t remember that answer|(?:change|update|set) .*graduation.*|use .*\.(?:pdf|docx))[.! ]*$/i.test(
           chat,
         )
@@ -453,7 +622,7 @@ export default function App() {
       setDraftOrigin(false);
       setDocumentChoice("");
       setActive(await api(`/applications/${active.id}`));
-      setMemory(await api("/memory"));
+      await refresh();
     });
   }
   function updateField(
@@ -581,21 +750,31 @@ export default function App() {
     }
   }
   async function lock() {
-    await run(async () => {
-      await api("/session", "DELETE");
-      clearSession();
-      setConnected(false);
-      setConnectionState("locked");
-      setProfile(empty);
-      setDocs([]);
-      setApps([]);
-      setMemory([]);
-      setActive(null);
-      setImage(null);
-      setView("dashboard");
-      setError("");
-      setNotice("");
-    });
+    // Start revocation while the credential is available, but hide private UI
+    // immediately even if the server is slow or unavailable.
+    const revocation = api("/session", "DELETE").catch(() => {});
+    profileEpoch.current += 1;
+    clearSession();
+    setNetworkOffline(false);
+    savedProfile.current = "";
+    profileRef.current = empty;
+    setConnected(false);
+    setConnectionState("locked");
+    setProfile(empty);
+    setDocs([]);
+    setApps([]);
+    setMemory([]);
+    setActive(null);
+    setImage(null);
+    setEditing(null);
+    setMemEditing(null);
+    setChat("");
+    setEdited("");
+    setMemAnswer("");
+    setView("dashboard");
+    setError("");
+    setNotice("");
+    await revocation;
   }
   if (!connected)
     return (
@@ -694,6 +873,30 @@ export default function App() {
     );
   return (
     <div className="app-shell">
+      {networkOffline && (
+        <div className="connection-banner" role="status">
+          <CircleHelp size={18} />
+          <span>
+            Blink lost its local connection. Your unsaved changes stay in this
+            tab.
+          </span>
+          <button
+            className="secondary"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                const cfg = await connect();
+                setConfig(cfg);
+                await persistProfile();
+                await refresh();
+                setNetworkOffline(false);
+              })
+            }
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
       <aside className="sidebar">
         <a className="brand" href="#" onClick={() => setView("dashboard")}>
           <span className="brand-icon">
@@ -1168,7 +1371,7 @@ export default function App() {
                   disabled={busy}
                   onClick={() =>
                     run(async () => {
-                      await api("/profile", "PUT", profile);
+                      await persistProfile();
                       setNotice("Profile saved securely on this device.");
                     })
                   }
@@ -1176,6 +1379,15 @@ export default function App() {
                   <Check size={16} />
                   Save profile
                 </button>
+              </div>
+              <div className="inline-note" role="status">
+                <ShieldCheck size={16} />
+                {profileSaveState === "saved"
+                  ? "All changes saved securely on this device."
+                  : profileSaveState === "saving" ||
+                      profileSaveState === "pending"
+                    ? "Saving your changes…"
+                    : "Your changes are still in this tab. Reconnect, then choose Save profile to try again."}
               </div>
               <div className="profile-progress">
                 <span>Profile completion</span>
@@ -1201,7 +1413,7 @@ export default function App() {
                     <h3>{tabNames[tab]}</h3>
                     <p>
                       Start with your name and contact details. Everything is
-                      optional. Use Save profile to keep your changes.
+                      optional. Changes save automatically on this device.
                     </p>
                   </div>
                 </div>
@@ -1356,6 +1568,15 @@ export default function App() {
                             </button>
                           )
                         )}
+                        <button
+                          className="icon-btn"
+                          aria-label={`Download ${d.name}`}
+                          onClick={() =>
+                            run(() => downloadDocument(d.id, d.name))
+                          }
+                        >
+                          <Download size={17} />
+                        </button>
                         <button
                           className="icon-btn"
                           aria-label={`Delete ${d.name}`}
@@ -1624,6 +1845,32 @@ export default function App() {
                 </div>
               ) : (
                 <>
+                  {active.status === "manual" && (
+                    <div className="inline-note handoff-note">
+                      <CircleHelp size={20} />
+                      <div>
+                        <strong>This step needs your attention</strong>
+                        <p>
+                          Check the assistant’s explanation below. Login and
+                          CAPTCHA stay manual. If this employer’s workflow is
+                          unsupported, you can finish on its website using your
+                          saved documents and answers.
+                        </p>
+                        <a href={active.url} target="_blank" rel="noreferrer">
+                          Open the employer’s page <ArrowUpRight size={14} />
+                        </a>
+                        <button
+                          className="text-button"
+                          onClick={() => {
+                            setTab("documents");
+                            setView("profile");
+                          }}
+                        >
+                          Your documents
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {active.error && (
                     <div className="alert error">
                       <CircleHelp size={17} />
@@ -1738,8 +1985,24 @@ export default function App() {
                           {active.pending.options?.length ? (
                             <select
                               aria-label="Answer option"
-                              value={chat}
-                              onChange={(e) => setChat(e.target.value)}
+                              multiple={
+                                active.pending.kind === "select-multiple"
+                              }
+                              value={
+                                active.pending.kind === "select-multiple"
+                                  ? chat.split("; ").filter(Boolean)
+                                  : chat
+                              }
+                              onChange={(e) =>
+                                setChat(
+                                  active.pending?.kind === "select-multiple"
+                                    ? Array.from(e.target.selectedOptions)
+                                        .map((o) => o.value)
+                                        .filter(Boolean)
+                                        .join("; ")
+                                    : e.target.value,
+                                )
+                              }
                             >
                               <option value="">Choose an answer</option>
                               {active.pending.options.map((o) => (
@@ -1762,6 +2025,17 @@ export default function App() {
                               ))}
                             </select>
                           ) : null}
+                          {active.pending.kind === "file" && (
+                            <button
+                              className="text-button"
+                              onClick={() => {
+                                setTab("documents");
+                                setView("profile");
+                              }}
+                            >
+                              Upload a document
+                            </button>
+                          )}
                           {!["verification", "workflow"].includes(
                             active.pending.kind,
                           ) &&
@@ -1793,29 +2067,30 @@ export default function App() {
                                     self-identification answer
                                   </label>
                                 )}
-                                {["textarea", "text"].includes(
-                                  active.pending.kind,
-                                ) && (
-                                  <button
-                                    className="text-button"
-                                    onClick={() =>
-                                      run(async () => {
-                                        const result = await api(
-                                          `/applications/${active.id}/draft`,
-                                          "POST",
-                                        );
-                                        setChat(result.draft);
-                                        setDraftOrigin(true);
-                                        setNotice(
-                                          "Draft generated. Review and edit it before sending.",
-                                        );
-                                      })
-                                    }
-                                  >
-                                    <Sparkles size={13} />
-                                    Help draft an answer
-                                  </button>
-                                )}
+                                {config.ai_enabled &&
+                                  ["textarea", "text"].includes(
+                                    active.pending.kind,
+                                  ) && (
+                                    <button
+                                      className="text-button"
+                                      onClick={() =>
+                                        run(async () => {
+                                          const result = await api(
+                                            `/applications/${active.id}/draft`,
+                                            "POST",
+                                          );
+                                          setChat(result.draft);
+                                          setDraftOrigin(true);
+                                          setNotice(
+                                            "Draft generated. Review and edit it before sending.",
+                                          );
+                                        })
+                                      }
+                                    >
+                                      <Sparkles size={13} />
+                                      Help draft an answer
+                                    </button>
+                                  )}
                               </>
                             )}
                         </div>
@@ -1957,7 +2232,7 @@ export default function App() {
                       {active.answers?.map((a) => (
                         <div
                           className="review-answer"
-                          key={`${a.key}:${a.index}`}
+                          key={`${a.page || 0}:${a.key}:${a.group}:${a.index}`}
                         >
                           <div>
                             <strong>
@@ -1979,6 +2254,26 @@ export default function App() {
                               · {a.explanation}
                             </small>
                           </div>
+                          <button
+                            className="text-button"
+                            aria-label={`Copy ${a.label}`}
+                            onClick={() =>
+                              run(async () => {
+                                await navigator.clipboard.writeText(
+                                  a.kind === "file"
+                                    ? docs.find(
+                                        (doc) => doc.id === a.document_id,
+                                      )?.name || a.answer
+                                    : a.answer,
+                                );
+                                setNotice(
+                                  "Answer copied. Paste it into the employer’s form.",
+                                );
+                              })
+                            }
+                          >
+                            <Copy size={14} /> Copy
+                          </button>
                           {active.status === "review" && (
                             <button
                               className="text-button"
@@ -2023,6 +2318,7 @@ export default function App() {
               {editing.label}
               {editing.kind === "file" ? (
                 <select
+                  aria-label={editing.label}
                   value={documentChoice}
                   onChange={(e) => setDocumentChoice(e.target.value)}
                 >
@@ -2034,8 +2330,22 @@ export default function App() {
                 </select>
               ) : editing.options.length ? (
                 <select
-                  value={edited}
-                  onChange={(e) => setEdited(e.target.value)}
+                  aria-label={editing.label}
+                  multiple={editing.kind === "select-multiple"}
+                  value={
+                    editing.kind === "select-multiple"
+                      ? edited.split("; ").filter(Boolean)
+                      : edited
+                  }
+                  onChange={(e) =>
+                    setEdited(
+                      editing.kind === "select-multiple"
+                        ? Array.from(e.target.selectedOptions)
+                            .map((o) => o.value)
+                            .join("; ")
+                        : e.target.value,
+                    )
+                  }
                 >
                   {editing.options.map((o) => (
                     <option key={o}>{o}</option>
@@ -2043,14 +2353,16 @@ export default function App() {
                 </select>
               ) : (
                 <textarea
+                  aria-label={editing.label}
                   value={edited}
                   onChange={(e) => setEdited(e.target.value)}
                 />
               )}
             </label>
             <p>
-              The agent will reconstruct the form with this change. You’ll
-              review and approve it again.
+              Changes on this page update in the current browser. Earlier-page
+              changes may need to replay the form. You’ll review and approve the
+              updated application again.
             </p>
             <button
               className="primary"
@@ -2062,6 +2374,7 @@ export default function App() {
                     answer: edited,
                     group: editing.group,
                     index: editing.index,
+                    page: editing.page ?? 0,
                     document_id:
                       editing.kind === "file" ? documentChoice : null,
                   });

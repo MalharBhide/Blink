@@ -6,6 +6,7 @@ import hmac
 import time
 import os
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 from fastapi import (
     FastAPI,
@@ -39,7 +40,7 @@ from backend.app.schemas import (
     MemoryInput,
 )
 from backend.app.memory import get_profile, save_profile, remember, fingerprint
-from backend.app.documents import create_document, list_documents, default_resume, MAX_SIZE
+from backend.app.documents import create_document, list_documents, default_resume, document_payload, MAX_SIZE
 from backend.app.tracker import get_application, application_view, messages, log, update
 from database.models import Application, Profile, Document, SavedAnswer
 from database.session import session
@@ -48,9 +49,9 @@ from browser_agent.orchestrator import AgentOrchestrator
 from browser_agent.resolver import Resolution
 from browser_agent.parser import Field
 
-TOKEN = secrets.token_urlsafe(32)
 AGENTS: dict[str, AgentOrchestrator] = {}
 LOCAL_SESSIONS: dict[str, float] = {}
+BEARER_SESSIONS: dict[str, str] = {}
 
 
 @asynccontextmanager
@@ -67,18 +68,21 @@ async def lifespan(app):
                     **item.data,
                     "error": "Restart interrupted submission. Verify receipt manually; repeat submission is blocked.",
                 }
-            elif item.status not in ("submitted", "cancelled", "rejected", "submission_unknown", "paused"):
+            elif item.status not in ("submitted", "cancelled", "rejected", "submission_unknown"):
                 item.status = "paused"
                 item.data = {
                     **item.data,
                     "pending": None,
+                    "suggestion": None,
                     "error": "Server restarted. Continue to reconstruct using saved answers.",
                 }
         db.commit()
     yield
+    workers = [agent.task for agent in AGENTS.values() if agent.task and not agent.task.done()]
+    for task in workers:
+        task.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
     for agent in AGENTS.values():
-        if agent.task and not agent.task.done():
-            agent.task.cancel()
         if agent.controller:
             await agent.controller.close()
 
@@ -133,9 +137,21 @@ async def bad_input(request, exc):
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
 
+def valid_bearer(token):
+    tab = BEARER_SESSIONS.get(token)
+    return bool(tab and LOCAL_SESSIONS.get(tab, 0) > time.monotonic())
+
+
+def revoke_session(tab):
+    LOCAL_SESSIONS.pop(tab, None)
+    for bearer, owner in list(BEARER_SESSIONS.items()):
+        if owner == tab:
+            BEARER_SESSIONS.pop(bearer, None)
+
+
 def auth(request: Request):
     value = request.headers.get("authorization", "")
-    if not secrets.compare_digest(value, "Bearer " + TOKEN):
+    if not value.startswith("Bearer ") or not valid_bearer(value[7:]):
         raise HTTPException(401, "Local session required.")
 
 
@@ -166,16 +182,18 @@ def health(challenge: str = ""):
 
 def session_response(request: Request):
     now = time.monotonic()
-    LOCAL_SESSIONS.pop(request.headers.get("x-blink-session", ""), None)
+    revoke_session(request.headers.get("x-blink-session", ""))
     for key, expiry in list(LOCAL_SESSIONS.items()):
         if expiry <= now:
-            LOCAL_SESSIONS.pop(key, None)
+            revoke_session(key)
     if len(LOCAL_SESSIONS) >= 64:
-        LOCAL_SESSIONS.pop(next(iter(LOCAL_SESSIONS)))
+        revoke_session(next(iter(LOCAL_SESSIONS)))
     tab_session = secrets.token_urlsafe(32)
     LOCAL_SESSIONS[tab_session] = now + 8 * 60 * 60
+    bearer = secrets.token_urlsafe(32)
+    BEARER_SESSIONS[bearer] = tab_session
     return {
-        "token": TOKEN,
+        "token": bearer,
         "session": tab_session,
         "ai_enabled": bool(settings().openai_api_key),
         "model": settings().openai_model,
@@ -210,7 +228,8 @@ def launch_session(request: Request):
 
 @app.delete("/api/session", dependencies=[Depends(auth)])
 def lock_workspace(request: Request):
-    LOCAL_SESSIONS.pop(request.headers.get("x-blink-session", ""), None)
+    bearer = request.headers.get("authorization", "")[7:]
+    revoke_session(BEARER_SESSIONS.get(bearer, ""))
     return {"locked": True}
 
 
@@ -235,6 +254,16 @@ async def upload(file: UploadFile = File(...), kind: str = Form("resume"), defau
     return create_document(file.filename or "document", content, kind, default)
 
 
+@app.get("/api/documents/{doc_id}/download", dependencies=[Depends(auth)])
+def download_document(doc_id: str):
+    payload = document_payload(doc_id)
+    return Response(
+        payload["buffer"],
+        media_type=payload["mimeType"],
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(payload["name"], safe="")},
+    )
+
+
 @app.put("/api/documents/{doc_id}/default", dependencies=[Depends(auth)])
 def set_default(doc_id: str):
     with session() as db:
@@ -253,7 +282,36 @@ def delete_doc(doc_id: str):
         doc = db.get(Document, doc_id)
         if not doc:
             raise HTTPException(404)
+        active = next(
+            (
+                item
+                for item in db.scalars(select(Application))
+                if item.status not in ("submitted", "cancelled", "rejected", "paused", "submission_unknown")
+                and (
+                    item.data.get("resume_id") == doc_id
+                    or any(answer.get("document_id") == doc_id for answer in item.data.get("answers", []))
+                )
+            ),
+            None,
+        )
+        if active:
+            raise HTTPException(
+                409,
+                {
+                    "message": "This document is being used by an application. Pause it or select another document first.",
+                    "application_id": active.id,
+                },
+            )
+        was_default = doc.data.get("default")
         db.delete(doc)
+        if was_default:
+            candidates = [
+                item
+                for item in db.scalars(select(Document).where(Document.id != doc_id))
+                if item.data["kind"] == "resume"
+            ]
+            if len(candidates) == 1:
+                candidates[0].data = {**candidates[0].data, "default": True}
         db.commit()
         (settings().data_dir / "documents" / doc.id).unlink(missing_ok=True)
     return {"deleted": True}
@@ -327,6 +385,7 @@ async def start_application(body: StartInput):
             raise HTTPException(
                 409,
                 {
+                    "code": "duplicate_application",
                     "message": "This position already exists. Resume it in History rather than applying twice.",
                     "application_id": existing.id,
                 },
@@ -341,7 +400,12 @@ async def start_application(body: StartInput):
         )
         if active:
             raise HTTPException(
-                409, {"message": "Pause or stop your current application first.", "application_id": active.id}
+                409,
+                {
+                    "code": "application_busy",
+                    "message": "Pause or stop your current application first.",
+                    "application_id": active.id,
+                },
             )
         item = Application(
             id=str(uuid4()),
@@ -419,6 +483,7 @@ async def edit_answer(app_id: str, body: EditInput):
                 if x["key"] == body.key
                 and x.get("group", "") == body.group
                 and x.get("index", 0) == body.index
+                and (body.page is None or x.get("page", 0) == body.page)
             ),
             None,
         )
@@ -427,18 +492,55 @@ async def edit_answer(app_id: str, body: EditInput):
         from backend.app.tracker import save_answer
 
         field = Field(
-            **{k: selected[k] for k in ("key", "label", "kind", "required", "options", "group", "index")}
+            **{k: selected[k] for k in ("key", "label", "kind", "required", "options", "group", "index")},
+            page=selected.get("page", 0),
         )
-        save_answer(
-            app_id,
-            field,
-            Resolution(
-                body.answer,
-                "user",
-                "Edited by you during application review.",
-                body.document_id or selected.get("document_id"),
-            ),
+        resolution = Resolution(
+            body.answer,
+            "user",
+            "Edited by you during application review.",
+            body.document_id or selected.get("document_id"),
         )
+        if field.options and body.answer not in field.options and field.kind != "select-multiple":
+            raise ValueError("Choose one of the available options.")
+        # Update the displayed page in its existing context, preserving login and
+        # completed earlier steps. The worker rechecks conditional fields before review.
+        if (
+            agent.controller
+            and agent.task
+            and not agent.task.done()
+            and field.page == item.data.get("step", 0)
+        ):
+            current_fields = await agent.controller.inspect(field.page)
+            current = next(
+                (
+                    entry
+                    for entry in current_fields
+                    if (entry.key, entry.group, entry.index, entry.label)
+                    == (field.key, field.group, field.index, field.label)
+                ),
+                None,
+            )
+            if current:
+                try:
+                    if current.kind == "file":
+                        await agent.controller.upload(current, resolution.document_id)
+                    else:
+                        await agent.controller.fill(current, resolution.answer)
+                except Exception:
+                    raise ValueError(
+                        "The portal could not accept this value. Check its format or choose an available option."
+                    ) from None
+                save_answer(app_id, current, resolution)
+                agent.approval.clear()
+                agent.review_refresh = True
+                agent.state("filling", approved_revision=None)
+                agent.approval.set()  # Wake for revalidation, not submission.
+                return {
+                    "updated": True,
+                    "message": "Updated in the current browser. Checking the form before a fresh review.",
+                }
+        save_answer(app_id, field, resolution)
         # Reconstruct all steps so earlier page edits really reach the portal before reapproval.
         if agent.task:
             agent.task.cancel()
@@ -567,9 +669,36 @@ async def chat(app_id: str, body: ChatInput):
 @app.put("/api/applications/{app_id}/resume/{doc_id}", dependencies=[Depends(auth)])
 async def change_resume(app_id: str, doc_id: str):
     validate_doc(doc_id)
+    with session() as db:
+        if db.get(Document, doc_id).data["kind"] != "resume":
+            raise ValueError("Choose a document marked as a resume.")
     agent = agent_for(app_id)
     if get_application(app_id).status not in ("paused", "review", "waiting_answer"):
         raise ValueError("Pause or review before changing the resume.")
+    current_app = get_application(app_id)
+    if current_app.status == "review":
+        current_file = next(
+            (
+                item
+                for item in current_app.data.get("answers", [])
+                if item["kind"] == "file"
+                and re.search(r"\b(?:resume|résumé|cv|curriculum vitae)\b", item["label"], re.I)
+                and item.get("page", 0) == current_app.data.get("step", 0)
+            ),
+            None,
+        )
+        if current_file:
+            return await edit_answer(
+                app_id,
+                EditInput(
+                    key=current_file["key"],
+                    answer="Selected uploaded document",
+                    group=current_file.get("group", ""),
+                    index=current_file.get("index", 0),
+                    page=current_file.get("page", 0),
+                    document_id=doc_id,
+                ),
+            )
     async with agent.lock:
         if agent.task:
             agent.task.cancel()
@@ -595,7 +724,7 @@ async def events(ws: WebSocket, app_id: str):
     if (
         ws.client.host not in ("127.0.0.1", "::1", "testclient")
         or ws.headers.get("origin") not in settings().origins
-        or not secrets.compare_digest(token, TOKEN)
+        or not valid_bearer(token)
     ):
         await ws.close(code=1008)
         return
@@ -603,6 +732,9 @@ async def events(ws: WebSocket, app_id: str):
     try:
         last = None
         while True:
+            if not valid_bearer(token):
+                await ws.close(code=1008)
+                return
             data = application(app_id)
             signature = (data["revision"], len(data["messages"]))
             if signature != last:

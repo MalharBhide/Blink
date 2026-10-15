@@ -61,6 +61,7 @@ def test_tab_session_does_not_bypass_auth_origin_or_lock(client):
     assert "set-cookie" not in restored.headers
     assert client.get("/api/session", headers=headers).status_code == 403  # Old tab secret rotates out.
     headers["X-Blink-Session"] = restored.json()["session"]
+    headers["Authorization"] = "Bearer " + restored.json()["token"]
     assert client.get("/api/session").status_code == 403
     assert client.get("/api/session", headers={**headers, "Origin": "https://evil.test"}).status_code == 403
     assert (
@@ -129,3 +130,35 @@ def test_private_opener_keeps_credentials_out_of_process_arguments(tmp_path, mon
     assert access_code() not in body
     if os.name != "nt":
         assert stat.S_IMODE((control / "open.html").stat().st_mode) == 0o600
+
+
+def test_lock_revokes_bearer_only_for_its_tab_and_restore_rotates_it(client):
+    from backend.app.main import BEARER_SESSIONS
+
+    first = client.headers["Authorization"].removeprefix("Bearer ")
+    first_tab = BEARER_SESSIONS[first]
+    second = client.get(
+        "/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Access": access_code()}
+    ).json()
+    assert client.get("/api/profile", headers={"Authorization": "Bearer " + first}).status_code == 200
+    assert client.delete("/api/session", headers={"Authorization": "Bearer " + first}).status_code == 200
+    assert client.get("/api/profile", headers={"Authorization": "Bearer " + first}).status_code == 401
+    assert (
+        client.get("/api/profile", headers={"Authorization": "Bearer " + second["token"]}).status_code == 200
+    )
+    assert (
+        client.get(
+            "/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Session": first_tab}
+        ).status_code
+        == 403
+    )
+    restored = client.get(
+        "/api/session", headers={"X-Local-Client": "internship-ui", "X-Blink-Session": second["session"]}
+    ).json()
+    assert (
+        client.get("/api/profile", headers={"Authorization": "Bearer " + second["token"]}).status_code == 401
+    )
+    assert (
+        client.get("/api/profile", headers={"Authorization": "Bearer " + restored["token"]}).status_code
+        == 200
+    )
