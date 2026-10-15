@@ -111,7 +111,7 @@ def runtime():
             # applicant data and encryption keys are never reset for setup repair.
             venv = CONTROL / ("python-" + secrets.token_hex(4))
         print("Preparing Blink's private Python environment…", flush=True)
-        subprocess.run([python, "-m", "venv", str(venv)], cwd=ROOT, check=True)
+        subprocess.run([python, "-m", "venv", str(venv)], cwd=ROOT, check=True, timeout=120)
         python = str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
     env = dict(os.environ)
     env["PATH"] = str(Path(node).parent) + os.pathsep + env.get("PATH", "")
@@ -156,12 +156,13 @@ def install(cfg, env):
     try:
         output([cfg["python"], "-c", probe], env, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        print("First-time setup: downloading Blink's Python components…", flush=True)
+        print("Installing or repairing Blink's Python components…", flush=True)
         subprocess.run(
             [cfg["python"], "-m", "pip", "install", "--force-reinstall", "-r", str(lock)],
             cwd=ROOT,
             env=env,
             check=True,
+            timeout=300,
         )
     state["python"] = stamp
     pkg = ROOT / "frontend/package.json"
@@ -219,7 +220,11 @@ def install(cfg, env):
     if not browser_ready or state.get("browser") != stamp:
         print("Checking the application browser…", flush=True)
         subprocess.run(
-            [cfg["python"], "-m", "playwright", "install", "chromium"], cwd=ROOT, env=env, check=True
+            [cfg["python"], "-m", "playwright", "install", "chromium"],
+            cwd=ROOT,
+            env=env,
+            check=True,
+            timeout=300,
         )
         state["browser"] = stamp
     private_json(CONTROL / "setup.json", state)
