@@ -143,6 +143,12 @@ def digest(paths):
 
 
 def install(cfg, env):
+    # Generated source bytecode can become unreadable cloud placeholders even
+    # when the .py sources are available. Regenerate it instead of blocking imports.
+    for module in ("backend", "browser_agent", "database", "mock_portal", "scripts"):
+        for cached in (ROOT / module).rglob("*.pyc"):
+            if cached.parent.name == "__pycache__":
+                cached.unlink(missing_ok=True)
     if not (ROOT / ".env").exists():
         shutil.copyfile(ROOT / ".env.example", ROOT / ".env")
         (ROOT / ".env").chmod(0o600)
